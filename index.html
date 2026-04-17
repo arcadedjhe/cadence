@@ -257,6 +257,48 @@ function ImageGallery({ images }) {
   );
 }
 
+// ─── TIMER HOOK ──────────────────────────────────────────────────────────────
+function useTimer(plannedMin) {
+  const [secondsLeft, setSecondsLeft] = useState(plannedMin * 60);
+  const [running, setRunning] = useState(false);
+  const [finished, setFinished] = useState(false);
+  const intervalRef = useRef(null);
+
+  useEffect(() => {
+    setSecondsLeft(plannedMin * 60);
+    setRunning(false);
+    setFinished(false);
+  }, [plannedMin]);
+
+  useEffect(() => {
+    if (running) {
+      intervalRef.current = setInterval(() => {
+        setSecondsLeft(s => {
+          if (s <= 1) {
+            clearInterval(intervalRef.current);
+            setRunning(false);
+            setFinished(true);
+            return 0;
+          }
+          return s - 1;
+        });
+      }, 1000);
+    } else {
+      clearInterval(intervalRef.current);
+    }
+    return () => clearInterval(intervalRef.current);
+  }, [running]);
+
+  const toggle = () => { if (!finished) setRunning(r => !r); };
+  const reset  = () => { setRunning(false); setFinished(false); setSecondsLeft(plannedMin * 60); };
+
+  const mm = String(Math.floor(secondsLeft / 60)).padStart(2, '0');
+  const ss = String(secondsLeft % 60).padStart(2, '0');
+  const pct = 1 - secondsLeft / (plannedMin * 60);
+
+  return { mm, ss, pct, running, finished, toggle, reset };
+}
+
 // ─── BLOCK CARD ───────────────────────────────────────────────────────────────
 function BlockCard({ block, items, onValidate }) {
   const cat = CATEGORIES[block.category] || CATEGORIES.gammes;
@@ -266,6 +308,7 @@ function BlockCard({ block, items, onValidate }) {
   const [actualMin, setActualMin] = useState(String(block.actualMin || block.plannedMin));
   const [mastery, setMastery] = useState(block.validatedMastery || (item && item.mastery) || 'fragile');
   const done = !!block.validated;
+  const timer = useTimer(block.plannedMin);
 
   const handleOpen = () => {
     setActualMin(String(block.actualMin || block.plannedMin));
@@ -302,6 +345,51 @@ function BlockCard({ block, items, onValidate }) {
           )}
         </div>
       </div>
+
+      {/* Timer */}
+      {!done && (
+        <div style={{ borderTop: '1px solid rgba(255,255,255,0.07)', padding: '10px 16px', background: 'rgba(0,0,0,0.1)', display: 'flex', alignItems: 'center', gap: 12 }}>
+          {/* Circular progress */}
+          <div style={{ position: 'relative', width: 48, height: 48, flexShrink: 0 }}>
+            <svg width="48" height="48" viewBox="0 0 48 48">
+              <circle cx="24" cy="24" r="20" fill="none" stroke="rgba(255,255,255,0.07)" strokeWidth="3"/>
+              <circle cx="24" cy="24" r="20" fill="none"
+                stroke={timer.finished ? '#5cba7d' : timer.running ? cat.color : 'rgba(255,255,255,0.2)'}
+                strokeWidth="3" strokeLinecap="round"
+                strokeDasharray={`${2 * Math.PI * 20}`}
+                strokeDashoffset={`${2 * Math.PI * 20 * (1 - timer.pct)}`}
+                transform="rotate(-90 24 24)"
+                style={{ transition: 'stroke-dashoffset 1s linear' }}
+              />
+            </svg>
+            <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontFamily: 'monospace', color: timer.finished ? '#5cba7d' : '#888', fontWeight: 700 }}>
+              {timer.finished ? '✓' : `${timer.mm}:${timer.ss}`}
+            </div>
+          </div>
+
+          {/* Display */}
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 22, fontFamily: 'monospace', fontWeight: 700, color: timer.finished ? '#5cba7d' : timer.running ? '#f0e6d0' : '#888', letterSpacing: 1 }}>
+              {timer.mm}<span style={{ opacity: timer.running ? 1 : 0.4 }}>:</span>{timer.ss}
+            </div>
+            <div style={{ fontSize: 10, color: '#555', marginTop: 1 }}>
+              {timer.finished ? 'Temps écoulé !' : timer.running ? 'En cours…' : 'Prêt'}
+            </div>
+          </div>
+
+          {/* Controls */}
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={timer.toggle} disabled={timer.finished}
+              style={{ width: 44, height: 44, borderRadius: 12, border: 'none', background: timer.finished ? 'rgba(92,186,125,0.15)' : timer.running ? 'rgba(224,92,92,0.15)' : cat.color + '25', color: timer.finished ? '#5cba7d' : timer.running ? '#e05c5c' : cat.color, cursor: timer.finished ? 'default' : 'pointer', fontSize: 18, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              {timer.running ? '⏸' : '▶'}
+            </button>
+            <button onClick={timer.reset}
+              style={{ width: 44, height: 44, borderRadius: 12, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.04)', color: '#555', cursor: 'pointer', fontSize: 16, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              ↺
+            </button>
+          </div>
+        </div>
+      )}
 
       {showNotes && item && (
         <div style={{ borderTop: '1px solid rgba(255,255,255,0.07)', padding: '12px 16px', background: 'rgba(0,0,0,0.1)' }}>
