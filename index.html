@@ -47,14 +47,14 @@ const MAX_DAYS_UNSEEN   = { priority: 5, normal: 12, occasional: 45 };
 const SESSION_MAX_MIN   = 50;
 
 const CATEGORIES = {
-  gammes:         { label: "Gammes & Doigts", icon: "🎼", color: "#7b9cdf" },
+  gammes:         { label: "Technique", icon: "🎼", color: "#7b9cdf" },
   langage_musical:{ label: "Langage musical", icon: "🎨", color: "#c47fdf" },
   morceau:        { label: "Morceau",         icon: "🎵", color: "#5cba7d" },
   revision:       { label: "Révision",        icon: "🔁", color: "#e0a83a" },
 };
 
 const DEFAULT_SETTINGS = {
-  workDaysPerWeek: 5, gammesDailyMin: 8, techJazzWeeklyMin: 35,
+  workDaysPerWeek: 6, gammesDailyMin: 8, techJazzWeeklyMin: 35,
   morceauxWeeklyMin: 60, revisionsWeeklyMin: 16, revisionDaysPerWeek: 2,
   reminderEnabled: false, reminderHour: 19, reminderMinute: 0,
 };
@@ -454,7 +454,7 @@ function TodayView({ items, settings, sessions, setSessions, setItems }) {
           {jokerUsed
             ? <div style={{ textAlign: 'center', fontSize: 12, color: '#555' }}>🃏 Joker déjà utilisé cette semaine</div>
             : <button onClick={handleJoker} style={{ width: '100%', padding: '12px', background: 'transparent', border: '1px solid rgba(201,168,76,0.2)', borderRadius: 12, color: '#888', fontWeight: 600, fontSize: 14, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
-                <span>🃏</span> Utiliser mon joker de la semaine
+                <span>🃏</span> Joker
               </button>
           }
         </div>
@@ -826,7 +826,7 @@ function SettingsView({ settings, setSettings }) {
       <div style={{ marginBottom:24 }}>
         <div style={{ fontSize:12, color:'#888', letterSpacing:2, textTransform:'uppercase', marginBottom:14 }}>Rythme</div>
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
-          {[{key:'workDaysPerWeek',label:'Jours / sem.',min:3,max:7},{key:'revisionDaysPerWeek',label:'Révisions / sem.',min:1,max:4}].map(({key,label,min,max})=>(
+          {[{key:'workDaysPerWeek',label:'Jours de pratique / sem.',min:3,max:7},{key:'revisionDaysPerWeek',label:'Révisions / sem.',min:1,max:4}].map(({key,label,min,max})=>(
             <div key={key}>
               <label style={{ fontSize:12, color:'#888', display:'block', marginBottom:4 }}>{label}</label>
               <input type="number" min={min} max={max} value={form[key]} onChange={e=>set(key,parseInt(e.target.value))}
