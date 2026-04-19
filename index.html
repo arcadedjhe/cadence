@@ -838,7 +838,35 @@ function LibraryView({ items, setItems }) {
         <button onClick={() => setAdding(true)} style={{ marginLeft: 'auto', padding: '6px 16px', borderRadius: 20, background: '#c9a84c', border: 'none', color: '#1a1a18', fontWeight: 700, fontSize: 12, cursor: 'pointer' }}>+ Ajouter</button>
       </div>
 
-      {/* item form moved below with family support */}
+      {/* Add choice modal - right at top for visibility */}
+      {adding && (
+        <div style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 14, padding: 16, marginBottom: 16 }}>
+          <div style={{ fontSize: 12, color: '#888', letterSpacing: 1, textTransform: 'uppercase', marginBottom: 12 }}>Que voulez-vous créer ?</div>
+          <div style={{ display: 'flex', gap: 10, marginBottom: 10 }}>
+            <button onClick={() => { setAdding(false); setAddingType('item'); }} style={{ flex: 1, padding: '12px 8px', background: 'rgba(92,186,125,0.1)', border: '1px solid rgba(92,186,125,0.25)', borderRadius: 12, color: '#5cba7d', fontWeight: 600, fontSize: 13, cursor: 'pointer' }}>
+              <div style={{ fontSize: 20, marginBottom: 4 }}>🎵</div>
+              Item seul
+            </button>
+            <button onClick={() => { setAdding(false); setAddingType('group'); }} style={{ flex: 1, padding: '12px 8px', background: 'rgba(201,168,76,0.1)', border: '1px solid rgba(201,168,76,0.25)', borderRadius: 12, color: '#c9a84c', fontWeight: 600, fontSize: 13, cursor: 'pointer' }}>
+              <div style={{ fontSize: 20, marginBottom: 4 }}>📁</div>
+              Groupe
+            </button>
+          </div>
+          <button onClick={() => setAdding(false)} style={{ width: '100%', padding: '8px', background: 'transparent', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 10, color: '#555', cursor: 'pointer', fontSize: 13 }}>Annuler</button>
+        </div>
+      )}
+      {addingType === 'item' && (
+        <ItemForm
+          onSave={f => { const n = {...f, id: Date.now().toString(), lastWorked: null, lastRevised: null}; if(f.category!=='morceau') n.isActive=true; setItems(p=>[...p,n]); setAddingType(null); }}
+          onCancel={() => setAddingType(null)}
+        />
+      )}
+      {addingType === 'group' && (
+        <ItemForm
+          onSave={f => { const n = {...f, isGroup: true, id: Date.now().toString(), lastWorked: null, lastRevised: null}; if(f.category!=='morceau') n.isActive=true; setItems(p=>[...p,n]); setAddingType(null); }}
+          onCancel={() => setAddingType(null)}
+        />
+      )}
 
       {Object.entries(CATEGORIES).map(([cat, catInfo]) => {
         const catItems = items.filter(i => i.category===cat && match(i));
@@ -977,35 +1005,7 @@ function LibraryView({ items, setItems }) {
         );
       })}
       {/* Add family button */}
-      {/* Add choice modal */}
-      {adding && (
-        <div style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 14, padding: 16, marginBottom: 16 }}>
-          <div style={{ fontSize: 12, color: '#888', letterSpacing: 1, textTransform: 'uppercase', marginBottom: 12 }}>Que voulez-vous créer ?</div>
-          <div style={{ display: 'flex', gap: 10, marginBottom: 10 }}>
-            <button onClick={() => { setAdding(false); setAddingType('item'); }} style={{ flex: 1, padding: '12px 8px', background: 'rgba(92,186,125,0.1)', border: '1px solid rgba(92,186,125,0.25)', borderRadius: 12, color: '#5cba7d', fontWeight: 600, fontSize: 13, cursor: 'pointer' }}>
-              <div style={{ fontSize: 20, marginBottom: 4 }}>🎵</div>
-              Item seul
-            </button>
-            <button onClick={() => { setAdding(false); setAddingType('group'); }} style={{ flex: 1, padding: '12px 8px', background: 'rgba(201,168,76,0.1)', border: '1px solid rgba(201,168,76,0.25)', borderRadius: 12, color: '#c9a84c', fontWeight: 600, fontSize: 13, cursor: 'pointer' }}>
-              <div style={{ fontSize: 20, marginBottom: 4 }}>📁</div>
-              Groupe
-            </button>
-          </div>
-          <button onClick={() => setAdding(false)} style={{ width: '100%', padding: '8px', background: 'transparent', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 10, color: '#555', cursor: 'pointer', fontSize: 13 }}>Annuler</button>
-        </div>
-      )}
-      {addingType === 'item' && (
-        <ItemForm
-          onSave={f => { const n = {...f, id: Date.now().toString(), lastWorked: null, lastRevised: null}; if(f.category!=='morceau') n.isActive=true; setItems(p=>[...p,n]); setAddingType(null); }}
-          onCancel={() => setAddingType(null)}
-        />
-      )}
-      {addingType === 'group' && (
-        <ItemForm
-          onSave={f => { const n = {...f, isGroup: true, id: Date.now().toString(), lastWorked: null, lastRevised: null}; if(f.category!=='morceau') n.isActive=true; setItems(p=>[...p,n]); setAddingType(null); }}
-          onCancel={() => setAddingType(null)}
-        />
-      )}
+
     </div>
   );
 }
