@@ -933,11 +933,7 @@ function LibraryView({ items, setItems }) {
                               {item.isActive?'✓':'En cours'}
                             </button>
                           )}
-                          <button onClick={() => togglePause(item.id)}
-                            title={item.paused ? 'Reprendre' : 'Mettre en pause'}
-                            style={{ padding: '5px 10px', borderRadius: 8, border: '1px solid', cursor: 'pointer', fontSize: 12, background: item.paused?'rgba(255,255,255,0.1)':'rgba(255,255,255,0.04)', borderColor: item.paused?'rgba(255,255,255,0.2)':'rgba(255,255,255,0.08)', color: item.paused?'#f0e6d0':'#555' }}>
-                            {item.paused ? '▶' : '⏸'}
-                          </button>
+
                           {(item.notes||(item.images&&item.images.length>0)) && (
                             <button onClick={() => setExpandedNotes(p=>({...p,[item.id]:!p[item.id]}))} style={{ padding: '5px 10px', background: expandedNotes[item.id]?'rgba(201,168,76,0.15)':'rgba(255,255,255,0.05)', border: '1px solid', borderColor: expandedNotes[item.id]?'rgba(201,168,76,0.3)':'rgba(255,255,255,0.1)', borderRadius: 8, color: expandedNotes[item.id]?'#c9a84c':'#666', cursor: 'pointer', fontSize: 13 }}>
                               {item.images&&item.images.length>0?'📷':'📝'}
@@ -961,6 +957,11 @@ function LibraryView({ items, setItems }) {
                             ))}
                           </select>
                           <button onClick={() => setEditing(item)} style={{ padding: '5px 10px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, color: '#888', cursor: 'pointer', fontSize: 13 }}>✎</button>
+                          <button onClick={() => togglePause(item.id)}
+                            title={item.paused ? 'Reprendre' : 'Mettre en pause'}
+                            style={{ padding: '5px 10px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.08)', cursor: 'pointer', fontSize: 12, background: 'transparent', color: '#555' }}>
+                            {item.paused ? '▶' : '⏸'}
+                          </button>
                           <button onClick={() => deleteItem(item.id)} style={{ padding: '5px 10px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, color: '#e05c5c', cursor: 'pointer', fontSize: 13 }}>×</button>
                         </div>
                       </div>
