@@ -214,19 +214,19 @@ function generateSession(items, settings, sessions, dateStr) {
   };
   const sessionCap = settings.sessionCapMin || SESSION_MAX_MIN;
   const blocks = [];
-  const gamme = pickItem(items.filter(i => i.category === 'gammes' && i.isActive && !i.isGroup), dateStr, maxDaysUnseen);
+  const gamme = pickItem(items.filter(i => i.category === 'gammes' && i.isActive && !i.isGroup && !i.paused), dateStr, maxDaysUnseen);
   if (gamme) {
     const gammeFamily = gamme.parentId ? items.find(i => i.id === gamme.parentId) : null;
     blocks.push({ itemId: gamme.id, title: gamme.title, category: 'gammes', plannedMin: settings.gammesDailyMin, validated: false, familyName: gammeFamily?.title || null });
   }
 
-  const lang = pickItem(items.filter(i => i.category === 'langage_musical' && i.isActive && !i.isGroup), dateStr, maxDaysUnseen);
+  const lang = pickItem(items.filter(i => i.category === 'langage_musical' && i.isActive && !i.isGroup && !i.paused), dateStr, maxDaysUnseen);
   if (lang) {
     const langFamily = lang.parentId ? items.find(i => i.id === lang.parentId) : null;
     blocks.push({ itemId: lang.id, title: lang.title, category: 'langage_musical', plannedMin: Math.round(settings.techJazzWeeklyMin / settings.workDaysPerWeek), validated: false, familyName: langFamily?.title || null });
   }
 
-  const morceau = pickItem(items.filter(i => i.category === 'morceau' && i.isActive && !i.isGroup), dateStr, maxDaysUnseen);
+  const morceau = pickItem(items.filter(i => i.category === 'morceau' && i.isActive && !i.isGroup && !i.paused), dateStr, maxDaysUnseen);
   if (morceau) {
     const morceauFamily = morceau.parentId ? items.find(i => i.id === morceau.parentId) : null;
     blocks.push({ itemId: morceau.id, title: morceau.title, category: 'morceau', plannedMin: (MASTERY[morceau.mastery] || MASTERY.fragile).timeMin, validated: false, familyName: morceauFamily ? morceauFamily.title : null });
@@ -840,7 +840,7 @@ function LibraryView({ items, setItems }) {
   const [expandedFamilies, setExpandedFamilies] = useState({});
   const toggleFamily = id => setExpandedFamilies(p => ({ ...p, [id]: !p[id] }));
 
-  const match = i => filter==='all'||( filter==='active'&&i.isActive)||(filter==='priority'&&i.frequency==='priority')||(filter==='occasional'&&i.frequency==='occasional');
+  const match = i => filter==='all'||( filter==='active'&&i.isActive)||(filter==='priority'&&i.frequency==='priority')||(filter==='occasional'&&i.frequency==='occasional')||(filter==='paused'&&i.paused);
 
   const addItem = (form, parentId = null) => {
     const n = { ...form, id: Date.now().toString(), lastWorked: null, lastRevised: null };
@@ -855,11 +855,12 @@ function LibraryView({ items, setItems }) {
   const deleteItem = id => setItems(p=>p.filter(i=>i.id!==id));
   const cycleFreq = id => { const c={normal:'priority',priority:'occasional',occasional:'normal'}; setItems(p=>p.map(i=>i.id===id?{...i,frequency:c[i.frequency||'normal']}:i)); };
   const toggleActive = id => setItems(p=>p.map(i=>i.id===id?{...i,isActive:!i.isActive}:i));
+  const togglePause = (id) => setItems(p => p.map(i => i.id === id ? { ...i, paused: !i.paused } : i));
 
   return (
     <div>
       <div style={{ display: 'flex', gap: 8, marginBottom: 20, flexWrap: 'wrap' }}>
-        {[{key:'all',label:'Tout'},{key:'active',label:'En cours'},{key:'priority',label:'⭐ Prioritaires'},{key:'occasional',label:'🌙 Occasionnels'}].map(f => (
+        {[{key:'all',label:'Tout'},{key:'active',label:'En cours'},{key:'priority',label:'⭐ Prioritaires'},{key:'occasional',label:'🌙 Occasionnels'},{key:'paused',label:'⏸ En pause'}].map(f => (
           <button key={f.key} onClick={() => setFilter(f.key)} style={{ padding: '6px 14px', borderRadius: 20, border: '1px solid', fontSize: 12, fontWeight: 600, cursor: 'pointer', background: filter===f.key?'#c9a84c':'transparent', color: filter===f.key?'#1a1a18':'#888', borderColor: filter===f.key?'#c9a84c':'rgba(255,255,255,0.12)' }}>{f.label}</button>
         ))}
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
@@ -907,14 +908,15 @@ function LibraryView({ items, setItems }) {
                   {editing?.id===item.id
                     ? <ItemForm initial={item} onSave={updateItem} onCancel={() => setEditing(null)} />
                     : (
-                    <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 12, padding: '12px 14px', marginBottom: 8 }}>
+                    <div style={{ background: item.paused ? 'rgba(255,255,255,0.01)' : 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 12, padding: '12px 14px', marginBottom: 8, opacity: item.paused ? 0.6 : 1 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                         <div style={{ flex: 1 }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                             <span style={{ color: '#f0e6d0', fontSize: 14 }}>{item.title}</span>
-                            {item.frequency==='priority' && <span style={{ fontSize: 10, background: 'rgba(201,168,76,0.2)', color: '#c9a84c', padding: '2px 7px', borderRadius: 10, fontWeight: 700 }}>⭐ PRIORITAIRE</span>}
-                            {item.frequency==='occasional' && <span style={{ fontSize: 10, background: 'rgba(123,156,223,0.2)', color: '#7b9cdf', padding: '2px 7px', borderRadius: 10, fontWeight: 700 }}>🌙 OCCASIONNEL</span>}
-                            {item.category==='morceau'&&item.isActive && <span style={{ fontSize: 10, background: 'rgba(92,186,125,0.2)', color: '#5cba7d', padding: '2px 7px', borderRadius: 10, fontWeight: 700 }}>EN COURS</span>}
+                            {item.paused && <span style={{ fontSize: 10, background: 'rgba(255,255,255,0.08)', color: '#666', padding: '2px 7px', borderRadius: 10, fontWeight: 700 }}>⏸ EN PAUSE</span>}
+                            {!item.paused && item.frequency==='priority' && <span style={{ fontSize: 10, background: 'rgba(201,168,76,0.2)', color: '#c9a84c', padding: '2px 7px', borderRadius: 10, fontWeight: 700 }}>⭐ PRIORITAIRE</span>}
+                            {!item.paused && item.frequency==='occasional' && <span style={{ fontSize: 10, background: 'rgba(123,156,223,0.2)', color: '#7b9cdf', padding: '2px 7px', borderRadius: 10, fontWeight: 700 }}>🌙 OCCASIONNEL</span>}
+                            {!item.paused && item.category==='morceau'&&item.isActive && <span style={{ fontSize: 10, background: 'rgba(92,186,125,0.2)', color: '#5cba7d', padding: '2px 7px', borderRadius: 10, fontWeight: 700 }}>EN COURS</span>}
                           </div>
                           {(() => {
                             const freq = item.frequency||'normal'; const maxDays = MAX_DAYS_UNSEEN[freq];
@@ -931,6 +933,11 @@ function LibraryView({ items, setItems }) {
                               {item.isActive?'✓':'En cours'}
                             </button>
                           )}
+                          <button onClick={() => togglePause(item.id)}
+                            title={item.paused ? 'Reprendre' : 'Mettre en pause'}
+                            style={{ padding: '5px 10px', borderRadius: 8, border: '1px solid', cursor: 'pointer', fontSize: 12, background: item.paused?'rgba(255,255,255,0.1)':'rgba(255,255,255,0.04)', borderColor: item.paused?'rgba(255,255,255,0.2)':'rgba(255,255,255,0.08)', color: item.paused?'#f0e6d0':'#555' }}>
+                            {item.paused ? '▶' : '⏸'}
+                          </button>
                           {(item.notes||(item.images&&item.images.length>0)) && (
                             <button onClick={() => setExpandedNotes(p=>({...p,[item.id]:!p[item.id]}))} style={{ padding: '5px 10px', background: expandedNotes[item.id]?'rgba(201,168,76,0.15)':'rgba(255,255,255,0.05)', border: '1px solid', borderColor: expandedNotes[item.id]?'rgba(201,168,76,0.3)':'rgba(255,255,255,0.1)', borderRadius: 8, color: expandedNotes[item.id]?'#c9a84c':'#666', cursor: 'pointer', fontSize: 13 }}>
                               {item.images&&item.images.length>0?'📷':'📝'}
