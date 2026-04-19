@@ -945,7 +945,7 @@ function LibraryView({ items, setItems }) {
                           <button onClick={() => togglePause(item.id)}
                             title={item.paused?'Reprendre':'Mettre en pause'}
                             style={{ width: 30, height: 30, borderRadius: 8, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.05)', color: '#888', cursor: 'pointer', fontSize: 12, fontFamily: 'monospace', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                            {item.paused?'▷':'‖'}
+                            {item.paused?'▷':'❙ ❙'}
                           </button>
                           <button onClick={() => deleteItem(item.id)}
                             style={{ width: 30, height: 30, borderRadius: 8, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.05)', color: '#e05c5c', cursor: 'pointer', fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>×</button>
@@ -989,7 +989,7 @@ function LibraryView({ items, setItems }) {
                       {/* ── Ligne 3 : Maîtrise ── */}
                       {item.mastery && (
                         <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-                          <span style={{ fontSize: 11, color: '#555' }}>Maîtrise :</span>
+
                           {Object.entries(MASTERY).map(([k,m]) => (
                             <button key={k} onClick={() => setItems(p=>p.map(i=>i.id===item.id?{...i,mastery:k}:i))}
                               style={{ padding: '3px 10px', borderRadius: 20, border: '1px solid', fontSize: 11, fontWeight: 600, cursor: 'pointer',
