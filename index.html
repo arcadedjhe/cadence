@@ -908,73 +908,99 @@ function LibraryView({ items, setItems }) {
                   {editing?.id===item.id
                     ? <ItemForm initial={item} onSave={updateItem} onCancel={() => setEditing(null)} />
                     : (
-                    <div style={{ background: item.paused ? 'rgba(255,255,255,0.01)' : 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 12, padding: '12px 14px', marginBottom: 8, opacity: item.paused ? 0.6 : 1 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                        <div style={{ flex: 1 }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                            <span style={{ color: '#f0e6d0', fontSize: 14 }}>{item.title}</span>
-                            {item.paused && <span style={{ fontSize: 10, background: 'rgba(255,255,255,0.08)', color: '#666', padding: '2px 7px', borderRadius: 10, fontWeight: 700 }}>⏸ EN PAUSE</span>}
-                            {!item.paused && item.frequency==='priority' && <span style={{ fontSize: 10, background: 'rgba(201,168,76,0.2)', color: '#c9a84c', padding: '2px 7px', borderRadius: 10, fontWeight: 700 }}>⭐ PRIORITAIRE</span>}
-                            {!item.paused && item.frequency==='occasional' && <span style={{ fontSize: 10, background: 'rgba(123,156,223,0.2)', color: '#7b9cdf', padding: '2px 7px', borderRadius: 10, fontWeight: 700 }}>🌙 OCCASIONNEL</span>}
-                            {!item.paused && item.category==='morceau'&&item.isActive && <span style={{ fontSize: 10, background: 'rgba(92,186,125,0.2)', color: '#5cba7d', padding: '2px 7px', borderRadius: 10, fontWeight: 700 }}>EN COURS</span>}
+                    <div style={{ background: item.paused ? 'rgba(255,255,255,0.01)' : 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 12, padding: '12px 14px', marginBottom: 8, opacity: item.paused ? 0.55 : 1 }}>
+
+                      {/* ── Ligne 1 : Titre + badges ── */}
+                      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8, marginBottom: 6 }}>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <span style={{ color: item.paused ? '#888' : '#f0e6d0', fontSize: 14 }}>{item.title}</span>
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginTop: 4 }}>
+                            {item.paused && <span style={{ fontSize: 10, background: 'rgba(255,255,255,0.07)', color: '#666', padding: '2px 7px', borderRadius: 10, fontWeight: 700 }}>EN PAUSE</span>}
+                            {!item.paused && item.frequency==='priority' && <span style={{ fontSize: 10, background: 'rgba(201,168,76,0.15)', color: '#c9a84c', padding: '2px 7px', borderRadius: 10, fontWeight: 700 }}>⭐ Prioritaire</span>}
+                            {!item.paused && item.frequency==='occasional' && <span style={{ fontSize: 10, background: 'rgba(123,156,223,0.15)', color: '#7b9cdf', padding: '2px 7px', borderRadius: 10, fontWeight: 700 }}>🌙 Occasionnel</span>}
+                            {!item.paused && item.category==='morceau' && item.isActive && <span style={{ fontSize: 10, background: 'rgba(92,186,125,0.15)', color: '#5cba7d', padding: '2px 7px', borderRadius: 10, fontWeight: 700 }}>En cours</span>}
+                            {item.parentId && (() => { const g = items.find(i => i.id === item.parentId); return g ? <span style={{ fontSize: 10, background: 'rgba(255,255,255,0.06)', color: '#666', padding: '2px 7px', borderRadius: 10 }}>📁 {g.title}</span> : null; })()}
                           </div>
-                          {(() => {
+                          {/* Vu depuis */}
+                          {!item.paused && (() => {
                             const freq = item.frequency||'normal'; const maxDays = MAX_DAYS_UNSEEN[freq];
                             const daysSince = item.lastWorked ? Math.floor((new Date(TODAY)-new Date(item.lastWorked))/86400000) : null;
                             const overdue = daysSince!==null && daysSince>=maxDays;
                             const color = overdue?'#e05c5c':daysSince===null?'#555':daysSince>maxDays*0.7?'#e0a83a':'#555';
-                            const label = daysSince===null?'jamais travaillé':daysSince===0?'aujourd\'hui':`il y a ${daysSince}j`;
-                            return <div style={{ fontSize: 11, color, marginTop: 4 }}>{overdue&&'⚠️ '}Vu : {label}{overdue?' — relance auto':''}</div>;
+                            const label = daysSince===null?'jamais travaillé':daysSince===0?"aujourd'hui":`il y a ${daysSince}j`;
+                            return <div style={{ fontSize: 11, color, marginTop: 5 }}>{overdue?'⚠️ ':''}Vu : {label}{overdue?' — relance auto':''}</div>;
                           })()}
                         </div>
-                        <div style={{ display: 'flex', gap: 6 }}>
-                          {item.category==='morceau' && (
-                            <button onClick={() => toggleActive(item.id)} style={{ padding: '5px 10px', borderRadius: 8, border: '1px solid', cursor: 'pointer', fontSize: 12, background: item.isActive?'rgba(92,186,125,0.15)':'rgba(255,255,255,0.05)', borderColor: item.isActive?'rgba(92,186,125,0.3)':'rgba(255,255,255,0.1)', color: item.isActive?'#5cba7d':'#666' }}>
-                              {item.isActive?'✓':'En cours'}
-                            </button>
-                          )}
 
+                        {/* ── Boutons d'action (icônes uniquement) ── */}
+                        <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
                           {(item.notes||(item.images&&item.images.length>0)) && (
-                            <button onClick={() => setExpandedNotes(p=>({...p,[item.id]:!p[item.id]}))} style={{ padding: '5px 10px', background: expandedNotes[item.id]?'rgba(201,168,76,0.15)':'rgba(255,255,255,0.05)', border: '1px solid', borderColor: expandedNotes[item.id]?'rgba(201,168,76,0.3)':'rgba(255,255,255,0.1)', borderRadius: 8, color: expandedNotes[item.id]?'#c9a84c':'#666', cursor: 'pointer', fontSize: 13 }}>
+                            <button onClick={() => setExpandedNotes(p=>({...p,[item.id]:!p[item.id]}))}
+                              style={{ width: 30, height: 30, borderRadius: 8, border: '1px solid rgba(255,255,255,0.1)', background: expandedNotes[item.id]?'rgba(201,168,76,0.15)':'rgba(255,255,255,0.05)', color: expandedNotes[item.id]?'#c9a84c':'#666', cursor: 'pointer', fontSize: 13, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                               {item.images&&item.images.length>0?'📷':'📝'}
                             </button>
                           )}
-                          <button onClick={() => cycleFreq(item.id)} style={{ padding: '5px 10px', borderRadius: 8, border: '1px solid', cursor: 'pointer', fontSize: 14, background: item.frequency==='priority'?'rgba(201,168,76,0.15)':item.frequency==='occasional'?'rgba(123,156,223,0.15)':'rgba(255,255,255,0.05)', borderColor: item.frequency==='priority'?'rgba(201,168,76,0.3)':item.frequency==='occasional'?'rgba(123,156,223,0.3)':'rgba(255,255,255,0.1)', color: item.frequency==='priority'?'#c9a84c':item.frequency==='occasional'?'#7b9cdf':'#555' }}>
-                            {item.frequency==='priority'?'⭐':item.frequency==='occasional'?'🌙':'—'}
-                          </button>
-                          {/* Group selector */}
-                          <select
-                            value={item.parentId || ''}
-                            onChange={e => {
-                              const parentId = e.target.value || null;
-                              setItems(p => p.map(i => i.id === item.id ? { ...i, parentId } : i));
-                            }}
-                            style={{ padding: '4px 6px', background: '#2a2a28', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, color: item.parentId ? '#c9a84c' : '#555', fontSize: 11, cursor: 'pointer', outline: 'none', maxWidth: 90 }}
-                          >
-                            <option value=''>Sans groupe</option>
-                            {items.filter(i => i.isGroup && i.category === item.category).map(g => (
-                              <option key={g.id} value={g.id}>{g.title}</option>
-                            ))}
-                          </select>
-                          <button onClick={() => setEditing(item)} style={{ padding: '5px 10px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, color: '#888', cursor: 'pointer', fontSize: 13 }}>✎</button>
+                          <button onClick={() => setEditing(item)}
+                            style={{ width: 30, height: 30, borderRadius: 8, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.05)', color: '#888', cursor: 'pointer', fontSize: 13, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>✎</button>
                           <button onClick={() => togglePause(item.id)}
-                            title={item.paused ? 'Reprendre' : 'Mettre en pause'}
-                            style={{ padding: '5px 10px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.08)', cursor: 'pointer', fontSize: 14, background: 'transparent', color: '#555', fontFamily: 'monospace', lineHeight: 1 }}>
-                            {item.paused ? '▷' : '‖'}
+                            title={item.paused?'Reprendre':'Mettre en pause'}
+                            style={{ width: 30, height: 30, borderRadius: 8, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.05)', color: '#888', cursor: 'pointer', fontSize: 12, fontFamily: 'monospace', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                            {item.paused?'▷':'‖'}
                           </button>
-                          <button onClick={() => deleteItem(item.id)} style={{ padding: '5px 10px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, color: '#e05c5c', cursor: 'pointer', fontSize: 13 }}>×</button>
+                          <button onClick={() => deleteItem(item.id)}
+                            style={{ width: 30, height: 30, borderRadius: 8, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.05)', color: '#e05c5c', cursor: 'pointer', fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>×</button>
                         </div>
                       </div>
 
+                      {/* ── Ligne 2 : Fréquence + Morceau en cours + Groupe ── */}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', paddingTop: 8, borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                        {/* Fréquence */}
+                        <button onClick={() => cycleFreq(item.id)}
+                          style={{ padding: '4px 10px', borderRadius: 20, border: '1px solid', fontSize: 11, fontWeight: 600, cursor: 'pointer',
+                            background: item.frequency==='priority'?'rgba(201,168,76,0.12)':item.frequency==='occasional'?'rgba(123,156,223,0.12)':'rgba(255,255,255,0.04)',
+                            borderColor: item.frequency==='priority'?'rgba(201,168,76,0.3)':item.frequency==='occasional'?'rgba(123,156,223,0.3)':'rgba(255,255,255,0.08)',
+                            color: item.frequency==='priority'?'#c9a84c':item.frequency==='occasional'?'#7b9cdf':'#555' }}>
+                          {item.frequency==='priority'?'⭐ Prioritaire':item.frequency==='occasional'?'🌙 Occasionnel':'— Normal'}
+                        </button>
+
+                        {/* En cours (morceaux) */}
+                        {item.category==='morceau' && (
+                          <button onClick={() => toggleActive(item.id)}
+                            style={{ padding: '4px 10px', borderRadius: 20, border: '1px solid', fontSize: 11, fontWeight: 600, cursor: 'pointer',
+                              background: item.isActive?'rgba(92,186,125,0.12)':'rgba(255,255,255,0.04)',
+                              borderColor: item.isActive?'rgba(92,186,125,0.3)':'rgba(255,255,255,0.08)',
+                              color: item.isActive?'#5cba7d':'#555' }}>
+                            {item.isActive?'✓ En cours':'En cours ?'}
+                          </button>
+                        )}
+
+                        {/* Groupe */}
+                        {items.filter(i => i.isGroup && i.category === item.category).length > 0 && (
+                          <select value={item.parentId||''} onChange={e => { const v = e.target.value||null; setItems(p=>p.map(i=>i.id===item.id?{...i,parentId:v}:i)); }}
+                            style={{ padding: '4px 8px', background: '#2a2a28', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 20, color: item.parentId?'#c9a84c':'#555', fontSize: 11, cursor: 'pointer', outline: 'none' }}>
+                            <option value=''>📁 Sans groupe</option>
+                            {items.filter(i => i.isGroup && i.category===item.category).map(g=>(
+                              <option key={g.id} value={g.id}>📁 {g.title}</option>
+                            ))}
+                          </select>
+                        )}
+                      </div>
+
+                      {/* ── Ligne 3 : Maîtrise ── */}
                       {item.mastery && (
-                        <div style={{ display: 'flex', gap: 6, marginTop: 10, paddingTop: 10, borderTop: '1px solid rgba(255,255,255,0.06)', flexWrap: 'wrap' }}>
-                          <span style={{ fontSize: 11, color: '#555', alignSelf: 'center', marginRight: 4 }}>Maîtrise :</span>
+                        <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                          <span style={{ fontSize: 11, color: '#555' }}>Maîtrise :</span>
                           {Object.entries(MASTERY).map(([k,m]) => (
-                            <button key={k} onClick={() => setItems(p=>p.map(i=>i.id===item.id?{...i,mastery:k}:i))} style={{ padding: '4px 12px', borderRadius: 20, border: '1px solid', fontSize: 11, fontWeight: 600, cursor: 'pointer', background: item.mastery===k?m.color+'30':'transparent', borderColor: item.mastery===k?m.color:'rgba(255,255,255,0.1)', color: item.mastery===k?m.color:'#555' }}>{m.label}</button>
+                            <button key={k} onClick={() => setItems(p=>p.map(i=>i.id===item.id?{...i,mastery:k}:i))}
+                              style={{ padding: '3px 10px', borderRadius: 20, border: '1px solid', fontSize: 11, fontWeight: 600, cursor: 'pointer',
+                                background: item.mastery===k?m.color+'25':'transparent',
+                                borderColor: item.mastery===k?m.color:'rgba(255,255,255,0.08)',
+                                color: item.mastery===k?m.color:'#555' }}>{m.label}</button>
                           ))}
                         </div>
                       )}
 
+                      {/* ── Notes / Photos ── */}
                       {expandedNotes[item.id] && (item.notes||(item.images&&item.images.length>0)) && (
                         <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid rgba(255,255,255,0.06)' }}>
                           {item.notes && <div style={{ fontSize: 13, color: '#c8bfa8', lineHeight: 1.7, whiteSpace: 'pre-wrap', marginBottom: item.images&&item.images.length?12:0 }}>{item.notes}</div>}
@@ -982,7 +1008,7 @@ function LibraryView({ items, setItems }) {
                         </div>
                       )}
                       {!item.notes&&!(item.images&&item.images.length>0) && (
-                        <button onClick={() => setEditing(item)} style={{ marginTop: 8, fontSize: 11, color: '#555', background: 'transparent', border: 'none', cursor: 'pointer', padding: 0 }}>+ Ajouter des notes ou photos</button>
+                        <button onClick={() => setEditing(item)} style={{ marginTop: 6, fontSize: 11, color: '#555', background: 'transparent', border: 'none', cursor: 'pointer', padding: 0 }}>+ Notes ou photos</button>
                       )}
                     </div>
                   )}
