@@ -959,7 +959,7 @@ function LibraryView({ items, setItems }) {
                           <button onClick={() => setEditing(item)} style={{ padding: '5px 10px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, color: '#888', cursor: 'pointer', fontSize: 13 }}>✎</button>
                           <button onClick={() => togglePause(item.id)}
                             title={item.paused ? 'Reprendre' : 'Mettre en pause'}
-                            style={{ padding: '5px 10px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.08)', cursor: 'pointer', fontSize: 12, background: 'transparent', color: '#555' }}>
+                            style={{ padding: '5px 10px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.08)', cursor: 'pointer', fontSize: 13, background: 'transparent', color: '#555', fontFamily: 'monospace' }}>
                             {item.paused ? '▶' : '⏸'}
                           </button>
                           <button onClick={() => deleteItem(item.id)} style={{ padding: '5px 10px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, color: '#e05c5c', cursor: 'pointer', fontSize: 13 }}>×</button>
