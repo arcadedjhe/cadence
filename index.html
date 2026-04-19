@@ -802,6 +802,33 @@ function ItemForm({ initial, onSave, onCancel }) {
   );
 }
 
+// ─── GROUP FORM ───────────────────────────────────────────────────────────────
+function GroupForm({ onSave, onCancel }) {
+  const [title, setTitle] = useState('');
+  const [category, setCategory] = useState('gammes');
+  return (
+    <div style={{ background: 'rgba(201,168,76,0.06)', border: '1px solid rgba(201,168,76,0.2)', borderRadius: 14, padding: 16, marginBottom: 12 }}>
+      <div style={{ fontSize: 12, color: '#c9a84c', letterSpacing: 1, textTransform: 'uppercase', marginBottom: 12 }}>📁 Nouveau groupe</div>
+      <input value={title} onChange={e => setTitle(e.target.value)} placeholder="Nom du groupe (ex: Gammes majeures)"
+        style={{ width: '100%', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 10, padding: '11px 14px', color: '#f0e6d0', fontSize: 15, outline: 'none', marginBottom: 10, boxSizing: 'border-box' }} />
+      <div style={{ marginBottom: 12 }}>
+        <label style={{ fontSize: 11, color: '#888', display: 'block', marginBottom: 4 }}>CATÉGORIE</label>
+        <select value={category} onChange={e => setCategory(e.target.value)}
+          style={{ width: '100%', background: '#2a2a28', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 10, padding: '10px 12px', color: '#f0e6d0', fontSize: 13, outline: 'none' }}>
+          {Object.entries(CATEGORIES).map(([k,v]) => <option key={k} value={k}>{v.icon} {v.label}</option>)}
+        </select>
+      </div>
+      <div style={{ display: 'flex', gap: 10 }}>
+        <button onClick={() => title.trim() && onSave(title.trim(), category)} disabled={!title.trim()}
+          style={{ flex: 1, padding: '11px', background: title.trim() ? '#c9a84c' : 'rgba(255,255,255,0.06)', border: 'none', borderRadius: 10, color: title.trim() ? '#1a1a18' : '#555', fontWeight: 700, fontSize: 14, cursor: title.trim() ? 'pointer' : 'default' }}>
+          Créer le groupe
+        </button>
+        <button onClick={onCancel} style={{ padding: '11px 18px', background: 'transparent', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 10, color: '#888', cursor: 'pointer' }}>Annuler</button>
+      </div>
+    </div>
+  );
+}
+
 // ─── LIBRARY VIEW ─────────────────────────────────────────────────────────────
 function LibraryView({ items, setItems }) {
   const [adding, setAdding] = useState(false);
@@ -835,35 +862,28 @@ function LibraryView({ items, setItems }) {
         {[{key:'all',label:'Tout'},{key:'active',label:'En cours'},{key:'priority',label:'⭐ Prioritaires'},{key:'occasional',label:'🌙 Occasionnels'}].map(f => (
           <button key={f.key} onClick={() => setFilter(f.key)} style={{ padding: '6px 14px', borderRadius: 20, border: '1px solid', fontSize: 12, fontWeight: 600, cursor: 'pointer', background: filter===f.key?'#c9a84c':'transparent', color: filter===f.key?'#1a1a18':'#888', borderColor: filter===f.key?'#c9a84c':'rgba(255,255,255,0.12)' }}>{f.label}</button>
         ))}
-        <button onClick={() => setAdding(true)} style={{ marginLeft: 'auto', padding: '6px 16px', borderRadius: 20, background: '#c9a84c', border: 'none', color: '#1a1a18', fontWeight: 700, fontSize: 12, cursor: 'pointer' }}>+ Ajouter</button>
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+          <button onClick={() => { setAddingType('group'); setAdding(false); }} style={{ padding: '6px 12px', borderRadius: 20, background: 'transparent', border: '1px solid rgba(201,168,76,0.3)', color: '#c9a84c', fontWeight: 600, fontSize: 12, cursor: 'pointer' }}>📁 Groupe</button>
+          <button onClick={() => { setAdding(true); setAddingType(null); }} style={{ padding: '6px 16px', borderRadius: 20, background: '#c9a84c', border: 'none', color: '#1a1a18', fontWeight: 700, fontSize: 12, cursor: 'pointer' }}>+ Ajouter</button>
+        </div>
       </div>
 
-      {/* Add choice modal - right at top for visibility */}
+      {/* Add item form */}
       {adding && (
-        <div style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 14, padding: 16, marginBottom: 16 }}>
-          <div style={{ fontSize: 12, color: '#888', letterSpacing: 1, textTransform: 'uppercase', marginBottom: 12 }}>Que voulez-vous créer ?</div>
-          <div style={{ display: 'flex', gap: 10, marginBottom: 10 }}>
-            <button onClick={() => { setAdding(false); setAddingType('item'); }} style={{ flex: 1, padding: '12px 8px', background: 'rgba(92,186,125,0.1)', border: '1px solid rgba(92,186,125,0.25)', borderRadius: 12, color: '#5cba7d', fontWeight: 600, fontSize: 13, cursor: 'pointer' }}>
-              <div style={{ fontSize: 20, marginBottom: 4 }}>🎵</div>
-              Item seul
-            </button>
-            <button onClick={() => { setAdding(false); setAddingType('group'); }} style={{ flex: 1, padding: '12px 8px', background: 'rgba(201,168,76,0.1)', border: '1px solid rgba(201,168,76,0.25)', borderRadius: 12, color: '#c9a84c', fontWeight: 600, fontSize: 13, cursor: 'pointer' }}>
-              <div style={{ fontSize: 20, marginBottom: 4 }}>📁</div>
-              Groupe
-            </button>
-          </div>
-          <button onClick={() => setAdding(false)} style={{ width: '100%', padding: '8px', background: 'transparent', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 10, color: '#555', cursor: 'pointer', fontSize: 13 }}>Annuler</button>
-        </div>
-      )}
-      {addingType === 'item' && (
         <ItemForm
-          onSave={f => { const n = {...f, id: Date.now().toString(), lastWorked: null, lastRevised: null}; if(f.category!=='morceau') n.isActive=true; setItems(p=>[...p,n]); setAddingType(null); }}
-          onCancel={() => setAddingType(null)}
+          onSave={f => { const n = {...f, id: Date.now().toString(), lastWorked: null, lastRevised: null}; if(f.category!=='morceau') n.isActive=true; setItems(p=>[...p,n]); setAdding(false); }}
+          onCancel={() => setAdding(false)}
         />
       )}
+
+      {/* Add group form - just a name + category */}
       {addingType === 'group' && (
-        <ItemForm
-          onSave={f => { const n = {...f, isGroup: true, id: Date.now().toString(), lastWorked: null, lastRevised: null}; if(f.category!=='morceau') n.isActive=true; setItems(p=>[...p,n]); setAddingType(null); }}
+        <GroupForm
+          onSave={(title, category) => {
+            const n = { id: Date.now().toString(), title, category, isGroup: true };
+            setItems(p => [...p, n]);
+            setAddingType(null);
+          }}
           onCancel={() => setAddingType(null)}
         />
       )}
