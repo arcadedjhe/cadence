@@ -105,24 +105,48 @@ const DriveDB = {
     return data;
   },
 
+  onTokenExpired: null, // callback to trigger re-auth
+
   async set(name, data) {
     this.cache[name] = data;
     const body = JSON.stringify(data);
-    const id = await this.getFileId(name);
-    if (id) {
-      await this.req(`https://www.googleapis.com/upload/drive/v3/files/${id}?uploadType=media`, {
-        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body,
-      });
-    } else {
-      const bnd = 'cadencebnd';
-      const meta = JSON.stringify({ name, parents: ['appDataFolder'] });
-      const mp = `--${bnd}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n--${bnd}\r\nContent-Type: application/json\r\n\r\n${body}\r\n--${bnd}--`;
-      const r = await this.req(`https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id`, {
-        method: 'POST', headers: { 'Content-Type': `multipart/related; boundary=${bnd}` }, body: mp,
-      });
-      const f = await r.json();
-      this.fileIds[name] = f.id;
+    try {
+      const id = await this.getFileId(name);
+      if (id) {
+        const r = await this.req(`https://www.googleapis.com/upload/drive/v3/files/${id}?uploadType=media`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body,
+        });
+        if (!r.ok) throw new Error(`Save failed: ${r.status}`);
+      } else {
+        const bnd = 'cadencebnd';
+        const meta = JSON.stringify({ name, parents: ['appDataFolder'] });
+        const mp = `--${bnd}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n--${bnd}\r\nContent-Type: application/json\r\n\r\n${body}\r\n--${bnd}--`;
+        const r = await this.req(`https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id`, {
+          method: 'POST', headers: { 'Content-Type': `multipart/related; boundary=${bnd}` }, body: mp,
+        });
+        if (!r.ok) throw new Error(`Create failed: ${r.status}`);
+        const f = await r.json();
+        this.fileIds[name] = f.id;
+      }
+      // Signal successful save
+      if (this.onSaveSuccess) this.onSaveSuccess();
+    } catch(e) {
+      console.error('Drive save error:', e);
+      if (this.onSaveError) this.onSaveError(e.message);
+      throw e;
     }
+  },
+
+  // Pending saves queue for when token expires mid-session
+  pendingSaves: {},
+  queueSave(name, data) {
+    this.pendingSaves[name] = data;
+  },
+  async flushPendingSaves() {
+    for (const [name, data] of Object.entries(this.pendingSaves)) {
+      await this.set(name, data);
+    }
+    this.pendingSaves = {};
   },
 };
 
@@ -150,7 +174,11 @@ function useStorage(key, defaultVal) {
   const save = useCallback((updater) => {
     setVal(prev => {
       const next = typeof updater === 'function' ? updater(prev) : updater;
-      DriveDB.set(key + '.json', next).catch(console.error);
+      DriveDB.set(key + '.json', next).catch(err => {
+        console.error('Save error:', err);
+        // Queue for retry
+        DriveDB.queueSave(key + '.json', next);
+      });
       return next;
     });
   }, [key]);
@@ -1554,6 +1582,18 @@ function App() {
   const [sessions, setSessions, sl] = useStorage('pm_sessions', []);
   const [settings, setSettings, stl] = useStorage('pm_settings', DEFAULT_SETTINGS);
   const [tab, setTab] = useState('today');
+  const [saveStatus, setSaveStatus] = useState(null); // null | 'saving' | 'saved' | 'error'
+
+  useEffect(() => {
+    DriveDB.onSaveSuccess = () => {
+      setSaveStatus('saved');
+      setTimeout(() => setSaveStatus(null), 2000);
+    };
+    DriveDB.onSaveError = () => {
+      setSaveStatus('error');
+    };
+    return () => { DriveDB.onSaveSuccess = null; DriveDB.onSaveError = null; };
+  }, []);
 
   // Schedule notification on load
   useEffect(() => {
@@ -1586,7 +1626,12 @@ function App() {
             <div style={{ fontSize:20, fontFamily:"'Playfair Display', serif", color:'#f0e6d0', lineHeight:1 }}>
               <em>Cadence</em> <span style={{ color:'#c9a84c' }}>♩</span>
             </div>
-            <div style={{ fontSize:10, color:'#555', letterSpacing:2, textTransform:'uppercase', marginTop:2 }}>Journal de pratique</div>
+            <div style={{ display:'flex', alignItems:'center', gap:6, marginTop:2 }}>
+              <div style={{ fontSize:10, color:'#555', letterSpacing:2, textTransform:'uppercase' }}>Journal de pratique</div>
+              {saveStatus === 'saving' && <div style={{ width:6, height:6, borderRadius:'50%', background:'#e0a83a' }} title="Sauvegarde..." />}
+              {saveStatus === 'saved'  && <div style={{ width:6, height:6, borderRadius:'50%', background:'#5cba7d' }} title="Sauvegardé ✓" />}
+              {saveStatus === 'error'  && <div style={{ width:6, height:6, borderRadius:'50%', background:'#e05c5c' }} title="Erreur de sauvegarde !" />}
+            </div>
           </div>
           <div style={{ textAlign:'right' }}>
             <div style={{ fontSize:10, color:'#555' }}>Cette semaine</div>
@@ -1631,23 +1676,40 @@ function AuthScreen({ onAuth }) {
     }
   }, []);
 
-  const signIn = () => {
-    setLoading(true); setError(null);
+  const signIn = (silent = false) => {
+    if (!silent) { setLoading(true); setError(null); }
     try {
       const client = google.accounts.oauth2.initTokenClient({
         client_id: CLIENT_ID,
         scope: SCOPE,
         callback: resp => {
-          if (resp.error) { setError('Connexion échouée. Réessaie.'); setLoading(false); return; }
+          if (resp.error) {
+            if (!silent) { setError('Connexion échouée. Réessaie.'); setLoading(false); }
+            return;
+          }
           DriveDB.setToken(resp.access_token);
           sessionStorage.setItem('cadence_token', resp.access_token);
           sessionStorage.setItem('cadence_expiry', String(Date.now() + resp.expires_in * 1000));
-          onAuth();
+          // Flush any pending saves after token refresh
+          DriveDB.flushPendingSaves().catch(console.error);
+          if (!silent) onAuth();
         }
       });
-      client.requestAccessToken({ prompt: '' });
-    } catch(e) { setError('Google non disponible.'); setLoading(false); }
+      // Silent refresh (no popup) vs full login
+      client.requestAccessToken({ prompt: silent ? 'none' : '' });
+    } catch(e) { if (!silent) { setError('Google non disponible.'); setLoading(false); } }
   };
+
+  // Auto-refresh token 5 min before expiry
+  useEffect(() => {
+    const check = setInterval(() => {
+      const expiry = parseInt(sessionStorage.getItem('cadence_expiry') || '0');
+      if (expiry && Date.now() > expiry - 5 * 60 * 1000) {
+        signIn(true); // silent refresh
+      }
+    }, 60000); // check every minute
+    return () => clearInterval(check);
+  }, []);
 
   return (
     <div style={{ minHeight:'100vh', minHeight:'100dvh', display:'flex', alignItems:'center', justifyContent:'center', padding:24 }}>
@@ -1659,6 +1721,9 @@ function AuthScreen({ onAuth }) {
           <span>🔑</span>{loading?'Connexion…':'Se connecter avec Google'}
         </button>
         {error && <div style={{ marginTop:14, color:'#e05c5c', fontSize:13 }}>{error}</div>}
+        <div style={{ marginTop:20, fontSize:11, color:'#666', lineHeight:1.6 }}>
+          ⚠️ La connexion Google expire après 1h.<br/>Si tes données ne se sauvegardent plus, reconnecte-toi.
+        </div>
         <div style={{ marginTop:32, fontSize:11, color:'#444', lineHeight:1.7 }}>
           Tes données sont stockées dans ton Google Drive personnel.<br/>Personne d'autre n'y a accès.
         </div>
