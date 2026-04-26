@@ -1324,8 +1324,14 @@ function CalendarView({ sessions, setSessions, settings }) {
           else if (s?.absent)          { bg='rgba(224,92,92,0.1)';   bc='rgba(224,92,92,0.2)';   color='#e05c5c'; }
           else if (isToday)            { bg='rgba(201,168,76,0.1)';  bc='rgba(201,168,76,0.4)';  color='#c9a84c'; }
           return (
-            <div key={i} onClick={() => { if(s&&(s.validated||partiallyDone)) { setSelected(null); setTimeout(()=>setSelected(d),0); } else { setSelected(null); openModal(d); } }}
-              style={{ borderRadius:10, padding:'6px 4px', textAlign:'center', background:bg, border:`1px solid ${bc}`, cursor:'pointer', minHeight:46, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:2 }}>
+            <div key={i} onClick={() => {
+                if (s && (s.validated || partiallyDone || s.type==='alternatif' || s.type==='off' || s.joker)) {
+                  setSelected(null); setTimeout(()=>setSelected(d), 0);
+                } else {
+                  setSelected(null); openModal(d);
+                }
+              }}
+              style={{ borderRadius:10, padding:'6px 4px', textAlign:'center', background:bg, border:`1px solid ${bc}`, cursor: (s&&(s.validated||partiallyDone||s.type==='alternatif'||s.type==='off'||s.joker)) || (!s&&(isPast||isToday)) ? 'pointer' : 'default', minHeight:46, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:2 }}>
               <span style={{ fontSize:13, fontWeight:isToday?700:400, color }}>{d}</span>
               {s?.validated && <span style={{ fontSize:9, color:'#5cba7d', fontFamily:'monospace' }}>{s.actualMin}'</span>}
               {partiallyDone && <span style={{ fontSize:9, color:'#5cba7d88', fontFamily:'monospace' }}>{s.blocks.filter(b=>b.validated).length}/{s.blocks.length}</span>}
