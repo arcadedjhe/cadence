@@ -253,6 +253,34 @@ function calculateCatchup(sessions, settings, dateStr) {
 }
 const TODAY = toDateStr();
 
+// Find all consecutive alternatif days connected to a given date
+function getAlternatifPeriod(sessions, dateStr) {
+  const altDates = new Set(sessions.filter(s => s.type === 'alternatif').map(s => s.date));
+  if (!altDates.has(dateStr)) return [];
+
+  // Walk backwards and forwards to find all connected days
+  const result = [dateStr];
+  const base = new Date(dateStr + 'T12:00:00');
+
+  // Walk backwards
+  for (let i = 1; i <= 30; i++) {
+    const d = new Date(base); d.setDate(d.getDate() - i);
+    const ds = d.toISOString().slice(0, 10);
+    if (altDates.has(ds)) result.unshift(ds);
+    else break;
+  }
+
+  // Walk forwards
+  for (let i = 1; i <= 30; i++) {
+    const d = new Date(base); d.setDate(d.getDate() + i);
+    const ds = d.toISOString().slice(0, 10);
+    if (altDates.has(ds)) result.push(ds);
+    else break;
+  }
+
+  return result;
+}
+
 function compressImage(file, maxW = 1200, q = 0.75) {
   return new Promise(res => {
     const reader = new FileReader();
@@ -605,19 +633,22 @@ function OffTotalView() {
   );
 }
 
-function AlternatifView({ sessions, setSessions }) {
+function AlternatifView({ sessions, setSessions, settings }) {
   const todaySession = sessions.find(s => s.date === TODAY);
-  const periodId = todaySession?.periodId;
-  const periodSessions = periodId ? sessions.filter(s => s.periodId === periodId && s.type === 'alternatif') : [todaySession].filter(Boolean);
-  const periodDays = todaySession?.periodDays || 1;
-  const budget = periodDays * 10;
+
+  // Dynamically detect the full consecutive period
+  const periodDates = getAlternatifPeriod(sessions, TODAY);
+  const periodDays = periodDates.length;
+  const dailyMin = settings?.alternatifDailyMin || 10;
+  const budget = periodDays * dailyMin;
+  const periodSessions = sessions.filter(s => periodDates.includes(s.date));
   const totalSpent = periodSessions.reduce((a, s) => a + (s.timeSpent || 0), 0);
   const remaining = Math.max(0, budget - totalSpent);
   const done = totalSpent >= budget;
 
   const [manualMin, setManualMin] = useState('');
   const [note, setNote] = useState(todaySession?.note || '');
-  const [timerSec, setTimerSec] = useState(remaining * 60);
+  const [timerSec, setTimerSec] = useState(() => Math.max(0, remaining) * 60);
   const [running, setRunning] = useState(false);
   const intervalRef = useRef(null);
 
@@ -668,9 +699,13 @@ function AlternatifView({ sessions, setSessions }) {
 
       {/* Budget progress */}
       <div style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 14, padding: 18, marginBottom: 20 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 10 }}>
-          <span style={{ fontSize: 13, color: '#888' }}>Budget période ({periodDays} jour{periodDays > 1 ? 's' : ''})</span>
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+          <span style={{ fontSize: 13, color: '#888' }}>Budget période</span>
           <span style={{ fontSize: 13, fontFamily: 'monospace', fontWeight: 700, color: done ? '#5cba7d' : '#c9a84c' }}>{totalSpent}/{budget} min</span>
+        </div>
+        <div style={{ fontSize: 11, color: '#555', marginBottom: 8 }}>
+          {periodDays} jour{periodDays > 1 ? 's' : ''} consécutifs · {dailyMin} min/jour
+          {periodDates[0] !== TODAY && ` · du ${new Date(periodDates[0]+'T12:00:00').toLocaleDateString('fr-FR',{day:'numeric',month:'short'})} au ${new Date(periodDates[periodDates.length-1]+'T12:00:00').toLocaleDateString('fr-FR',{day:'numeric',month:'short'})}`}
         </div>
         <div style={{ height: 6, background: 'rgba(255,255,255,0.07)', borderRadius: 3, overflow: 'hidden', marginBottom: 8 }}>
           <div style={{ height: '100%', width: (pct * 100) + '%', background: done ? '#5cba7d' : '#c9a84c', borderRadius: 3, transition: 'width 0.4s ease' }} />
@@ -744,7 +779,7 @@ function TodayView({ items, settings, sessions, setSessions, setItems }) {
   const isAlternatif = existing?.type === 'alternatif';
 
   if (isOff) return <OffTotalView />;
-  if (isAlternatif) return <AlternatifView sessions={sessions} setSessions={setSessions} />;
+  if (isAlternatif) return <AlternatifView sessions={sessions} setSessions={setSessions} settings={settings} />;
 
   useEffect(() => {
     if (!generated && items.length > 0) {
@@ -1232,7 +1267,7 @@ function CalendarView({ sessions, setSessions, settings }) {
   const next = () => { const d=new Date(year,month,1); setVm(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`); };
 
   const [dayModal, setDayModal] = useState(null); // {d, dateStr, existing}
-  const [altDays, setAltDays] = useState(1); // number of days for alternatif period
+
 
   const openModal = (d) => {
     const dateStr = `${vm}-${String(d).padStart(2,'0')}`;
@@ -1251,18 +1286,12 @@ function CalendarView({ sessions, setSessions, settings }) {
     setDayModal(null);
   };
 
-  const markAlternatif = (dateStr, nDays) => {
-    const periodId = 'alt_' + dateStr;
-    const dailyMin = settings ? (settings.alternatifDailyMin || 10) : 10;
-    const budget = nDays * dailyMin;
-    const startDate = new Date(dateStr + 'T12:00:00');
-    const newSessions = Array.from({ length: nDays }, (_, i) => {
-      const d = new Date(startDate); d.setDate(d.getDate() + i);
-      const ds = d.toISOString().slice(0, 10);
-      return { date: ds, type: 'alternatif', periodId, periodDays: nDays, budget, timeSpent: 0, note: '', weekKey: getWeekKey(d) };
-    });
-    const dates = newSessions.map(s => s.date);
-    setSessions(p => [...p.filter(s => !dates.includes(s.date)), ...newSessions]);
+  const markAlternatif = (dateStr) => {
+    const weekStartDay = settings?.weekStartDay ?? 4;
+    setSessions(p => [
+      ...p.filter(s => s.date !== dateStr),
+      { date: dateStr, type: 'alternatif', timeSpent: 0, note: '', weekKey: getWeekKey(new Date(dateStr), weekStartDay) }
+    ]);
     setDayModal(null);
   };
 
@@ -1393,26 +1422,15 @@ function CalendarView({ sessions, setSessions, settings }) {
             </button>
 
             {/* Alternatif */}
-            <div style={{ background:'rgba(123,156,223,0.08)', border:'1px solid rgba(123,156,223,0.2)', borderRadius:12, padding:'14px 16px' }}>
-              <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:12 }}>
-                <span style={{fontSize:22}}>🎒</span>
-                <div>
-                  <div style={{fontWeight:700,color:'#7b9cdf',fontSize:14}}>Travail alternatif</div>
-                  <div style={{fontSize:11,color:'#555',marginTop:2}}>Synthé, lecture, théorie — budget 10 min/jour</div>
-                </div>
+            <button onClick={() => markAlternatif(dayModal.dateStr)}
+              style={{ padding:'14px 16px', background:'rgba(123,156,223,0.08)', border:'1px solid rgba(123,156,223,0.2)', borderRadius:12, color:'#7b9cdf', fontWeight:600, fontSize:14, cursor:'pointer', textAlign:'left', display:'flex', alignItems:'center', gap:12, width:'100%' }}>
+              <span style={{fontSize:22}}>🎒</span>
+              <div>
+                <div style={{fontWeight:700}}>Travail alternatif</div>
+                <div style={{fontSize:11,color:'#555',marginTop:2}}>Synthé, lecture, théorie — {settings?.alternatifDailyMin||10} min/jour</div>
+                <div style={{fontSize:11,color:'#7b9cdf66',marginTop:2}}>Les jours consécutifs forment automatiquement une période</div>
               </div>
-              <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-                <span style={{fontSize:12,color:'#888'}}>Nombre de jours :</span>
-                <div style={{display:'flex',gap:6}}>
-                  {[1,2,3,4,5,6,7].map(n => (
-                    <button key={n} onClick={() => setAltDays(n)} style={{ width:32,height:32,borderRadius:8,border:'1px solid',fontSize:13,fontWeight:700,cursor:'pointer',background:altDays===n?'rgba(123,156,223,0.25)':'rgba(255,255,255,0.04)',borderColor:altDays===n?'#7b9cdf':'rgba(255,255,255,0.1)',color:altDays===n?'#7b9cdf':'#555' }}>{n}</button>
-                  ))}
-                </div>
-              </div>
-              <button onClick={() => markAlternatif(dayModal.dateStr, altDays)} style={{ marginTop:12,width:'100%',padding:'10px',background:'rgba(123,156,223,0.15)',border:'1px solid rgba(123,156,223,0.3)',borderRadius:10,color:'#7b9cdf',fontWeight:700,fontSize:13,cursor:'pointer' }}>
-                Marquer {altDays} jour{altDays>1?'s':''} (budget : {altDays*(settings?.alternatifDailyMin||10)} min)
-              </button>
-            </div>
+            </button>
 
             <button onClick={() => setDayModal(null)} style={{ padding:'10px',background:'transparent',border:'1px solid rgba(255,255,255,0.1)',borderRadius:10,color:'#555',cursor:'pointer',fontSize:13 }}>Annuler</button>
           </div>
