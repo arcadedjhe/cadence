@@ -1353,16 +1353,65 @@ function CalendarView({ sessions, setSessions, settings }) {
             </div>
             {(s?.absent||s?.type==='off') && <div style={{ display:'flex', alignItems:'center', gap:10, color:'#e05c5c' }}><span style={{fontSize:24}}>🚫</span><div><div style={{fontWeight:700}}>Off total</div><div style={{fontSize:12,color:'#888',marginTop:2}}>Aucun travail musical possible</div></div></div>}
             {s?.joker   && <div style={{ display:'flex', alignItems:'center', gap:10, color:'#c9a84c' }}><span style={{fontSize:24}}>🃏</span><div><div style={{fontWeight:700}}>Jour joker</div><div style={{fontSize:12,color:'#888',marginTop:2}}>Session annulée</div></div></div>}
-            {s?.type==='alternatif' && (
-              <div style={{ display:'flex', alignItems:'flex-start', gap:10, color:'#7b9cdf' }}>
-                <span style={{fontSize:24}}>🎒</span>
+            {s?.type==='alternatif' && (() => {
+              const periodDates = getAlternatifPeriod(sessions, dateStr);
+              const dailyMin = 10; // fallback
+              const budget = periodDates.length * dailyMin;
+              const periodSessions = sessions.filter(ss => periodDates.includes(ss.date));
+              const totalSpent = periodSessions.reduce((a,ss) => a+(ss.timeSpent||0), 0);
+              const pct = Math.min(1, totalSpent / budget);
+              const today = new Date().toISOString().slice(0,10);
+
+              return (
                 <div>
-                  <div style={{fontWeight:700}}>Travail alternatif</div>
-                  <div style={{fontSize:12,color:'#888',marginTop:2}}>Budget période : {s.budget} min · Fait ce jour : {s.timeSpent||0} min</div>
-                  {s.note && <div style={{fontSize:12,color:'#c8bfa8',marginTop:4,fontStyle:'italic'}}>{s.note}</div>}
+                  {/* Header */}
+                  <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:14 }}>
+                    <span style={{fontSize:24}}>🎒</span>
+                    <div style={{flex:1}}>
+                      <div style={{color:'#7b9cdf', fontWeight:700, fontSize:15}}>Travail alternatif</div>
+                      <div style={{fontSize:12, color:'#888', marginTop:2}}>
+                        {periodDates.length} jour{periodDates.length>1?'s':''} · du {new Date(periodDates[0]+'T12:00:00').toLocaleDateString('fr-FR',{day:'numeric',month:'short'})} au {new Date(periodDates[periodDates.length-1]+'T12:00:00').toLocaleDateString('fr-FR',{day:'numeric',month:'short'})}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Progress bar */}
+                  <div style={{ marginBottom:16 }}>
+                    <div style={{ display:'flex', justifyContent:'space-between', marginBottom:6 }}>
+                      <span style={{fontSize:12, color:'#888'}}>Budget période</span>
+                      <span style={{fontSize:12, fontFamily:'monospace', fontWeight:700, color: pct>=1?'#5cba7d':'#c9a84c'}}>{totalSpent}/{budget} min</span>
+                    </div>
+                    <div style={{ height:6, background:'rgba(255,255,255,0.07)', borderRadius:3, overflow:'hidden' }}>
+                      <div style={{ height:'100%', width:(pct*100)+'%', background: pct>=1?'#5cba7d':'#7b9cdf', borderRadius:3, transition:'width 0.4s' }} />
+                    </div>
+                    {pct >= 1 && <div style={{fontSize:11, color:'#5cba7d', marginTop:4}}>🎉 Budget atteint !</div>}
+                  </div>
+
+                  {/* Day by day */}
+                  {periodDates.map(ds => {
+                    const dayS = sessions.find(ss => ss.date === ds);
+                    const spent = dayS?.timeSpent || 0;
+                    const note = dayS?.note || '';
+                    const isFuture = ds > today;
+                    const isToday2 = ds === today;
+                    const dl = new Date(ds+'T12:00:00').toLocaleDateString('fr-FR',{weekday:'short',day:'numeric',month:'short'});
+                    return (
+                      <div key={ds} style={{ display:'flex', alignItems:'flex-start', gap:10, padding:'9px 12px', background: ds===dateStr?'rgba(123,156,223,0.08)':'rgba(255,255,255,0.02)', borderLeft:'3px solid '+(spent>0?'#7b9cdf':isFuture?'rgba(255,255,255,0.05)':'rgba(255,255,255,0.1)'), borderRadius:8, marginBottom:5, opacity: isFuture?0.45:1 }}>
+                        <span style={{fontSize:14, marginTop:1}}>{spent>0?'✅':isFuture?'…':'○'}</span>
+                        <div style={{flex:1, minWidth:0}}>
+                          <div style={{display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+                            <span style={{fontSize:12, color: isToday2?'#c9a84c':spent>0?'#f0e6d0':'#666', fontWeight: isToday2?700:400, textTransform:'capitalize'}}>{dl}{isToday2 ? " (aujourd'hui)" : ""}</span>
+                            {spent > 0 && <span style={{fontSize:12, color:'#7b9cdf', fontFamily:'monospace', fontWeight:700}}>{spent} min</span>}
+                            {!spent && !isFuture && <span style={{fontSize:11, color:'#555'}}>—</span>}
+                          </div>
+                          {note && <div style={{fontSize:11, color:'#c8bfa8', marginTop:3, fontStyle:'italic', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>{note}</div>}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
-              </div>
-            )}
+              );
+            })()}
             {s && (s.validated || (s.blocks && s.blocks.some(b=>b.validated))) && s.blocks && (
               <>
                 <div style={{ display:'flex', gap:10, marginBottom:14 }}>
