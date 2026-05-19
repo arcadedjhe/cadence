@@ -972,6 +972,19 @@ function TodayView({ items, settings, sessions, setSessions, setItems }) {
   const [session, setSession] = useState(existing || null);
   const [generated, setGenerated] = useState(!!existing);
   const [showExtra, setShowExtra] = useState(false);
+
+  // Sync session state → sessions list (Drive) whenever session changes
+  useEffect(() => {
+    if (session && session.date === TODAY) {
+      setSessions(p => {
+        const others = p.filter(s => s.date !== TODAY);
+        const existing = p.find(s => s.date === TODAY);
+        // Only save if something actually changed
+        if (existing && JSON.stringify(existing) === JSON.stringify(session)) return p;
+        return [...others, session];
+      });
+    }
+  }, [session]);
   const thisWeek = getWeekKey(new Date(), settings?.weekStartDay ?? 4);
   const jokerUsed = sessions.some(s => s.weekKey === thisWeek && s.joker && s.date !== TODAY);
   const isJoker = !!existing?.joker;
@@ -992,11 +1005,9 @@ function TodayView({ items, settings, sessions, setSessions, setItems }) {
   const handleJoker = () => {
     const j = { date: TODAY, weekKey: thisWeek, joker: true, validated: false };
     setSession(j);
-    setTimeout(() => setSessions(p => [...p.filter(s => s.date !== TODAY), j]), 0);
   };
 
   const handleBlockValidate = (itemId, actualMin, newMastery, cancel) => {
-    // Compute updated session first
     setSession(prev => {
       if (!prev) return prev;
       const blocks = prev.blocks.map(b => {
@@ -1006,34 +1017,23 @@ function TodayView({ items, settings, sessions, setSessions, setItems }) {
       });
       const allDone = blocks.every(b => b.validated);
       const totalActual = blocks.reduce((a,b) => a+(b.actualMin||0), 0);
-      const updated = { ...prev, blocks, validated: allDone, actualMin: totalActual };
-
-      // Use setTimeout to save outside the updater function (avoids React batching issues)
-      setTimeout(() => {
-        setSessions(p => [...p.filter(s => s.date !== TODAY), updated]);
-        if (!cancel) {
-          setItems(p => p.map(item => {
-            if (item.id !== itemId) return item;
-            const block = blocks.find(b => b.itemId === itemId);
-            return { ...item, mastery: newMastery||item.mastery, lastWorked: TODAY, lastRevised: block?.category==='revision'?TODAY:item.lastRevised };
-          }));
-        }
-      }, 0);
-
-      return updated;
+      if (!cancel) {
+        setItems(p => p.map(item => {
+          if (item.id !== itemId) return item;
+          const block = blocks.find(b => b.itemId === itemId);
+          return { ...item, mastery: newMastery||item.mastery, lastWorked: TODAY, lastRevised: block?.category==='revision'?TODAY:item.lastRevised };
+        }));
+      }
+      return { ...prev, blocks, validated: allDone, actualMin: totalActual };
     });
   };
 
   const handleAddExtra = (extra) => {
+    setItems(p => p.map(i => i.id === extra.itemId ? { ...i, lastWorked: TODAY, mastery: extra.mastery } : i));
     setSession(prev => {
       if (!prev) return prev;
       const extraBlock = { ...extra, plannedMin: extra.actualMin, validated: true, validatedMastery: extra.mastery };
-      const updated = { ...prev, blocks: [...prev.blocks, extraBlock] };
-      setTimeout(() => {
-        setSessions(p => [...p.filter(s => s.date !== TODAY), updated]);
-        setItems(p => p.map(i => i.id === extra.itemId ? { ...i, lastWorked: TODAY, mastery: extra.mastery } : i));
-      }, 0);
-      return updated;
+      return { ...prev, blocks: [...prev.blocks, extraBlock] };
     });
   };
 
