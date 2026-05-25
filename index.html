@@ -987,7 +987,7 @@ function TodayView({ items, settings, sessions, setSessions, setItems }) {
   }, [session]);
   const thisWeek = getWeekKey(new Date(), settings?.weekStartDay ?? 4);
   const jokerUsed = sessions.some(s => s.weekKey === thisWeek && s.joker && s.date !== TODAY);
-  const isJoker = !!existing?.joker;
+  const isJoker = !!(session?.joker || existing?.joker);
   const isOff = existing?.type === 'off';
   const isAlternatif = existing?.type === 'alternatif';
 
@@ -1119,7 +1119,7 @@ function TodayView({ items, settings, sessions, setSessions, setItems }) {
 
       {/* Extra exercises added freely */}
       {session && (() => {
-        const extraBlocks = session.blocks.filter(b => b.extra);
+        const extraBlocks = (session.blocks || []).filter(b => b.extra);
         if (!extraBlocks.length) return null;
         return (
           <div style={{ marginTop: 8, paddingTop: 12, borderTop: '1px solid rgba(255,255,255,0.06)' }}>
