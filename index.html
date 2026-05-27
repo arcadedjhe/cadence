@@ -973,16 +973,10 @@ function TodayView({ items, settings, sessions, setSessions, setItems }) {
   const [generated, setGenerated] = useState(!!existing);
   const [showExtra, setShowExtra] = useState(false);
 
-  // Sync session state → sessions list (Drive) whenever session changes
+  // Sync session → sessions/Drive whenever session changes
   useEffect(() => {
     if (session && session.date === TODAY) {
-      setSessions(p => {
-        const others = p.filter(s => s.date !== TODAY);
-        const existing = p.find(s => s.date === TODAY);
-        // Only save if something actually changed
-        if (existing && JSON.stringify(existing) === JSON.stringify(session)) return p;
-        return [...others, session];
-      });
+      setSessions(p => [...p.filter(s => s.date !== TODAY), session]);
     }
   }, [session]);
   const thisWeek = getWeekKey(new Date(), settings?.weekStartDay ?? 4);
@@ -1580,7 +1574,7 @@ function CalendarView({ sessions, setSessions, settings }) {
           let bg='rgba(255,255,255,0.03)', bc='rgba(255,255,255,0.07)', color='#666';
           const partiallyDone = s && !s.validated && s.blocks && s.blocks.some(b => b.validated);
           if (s?.validated) { bg='rgba(92,186,125,0.15)'; bc='rgba(92,186,125,0.3)'; color='#5cba7d'; }
-          else if (partiallyDone) { bg='rgba(92,186,125,0.07)'; bc='rgba(92,186,125,0.2)'; color='#5cba7d88'; }
+          else if (partiallyDone) { bg='rgba(92,186,125,0.12)'; bc='rgba(92,186,125,0.35)'; color='#5cba7d'; }
           else if (s?.joker)           { bg='rgba(201,168,76,0.08)'; bc='rgba(201,168,76,0.2)';  color='#c9a84c'; }
           else if (s?.type==='off')     { bg='rgba(224,92,92,0.1)';   bc='rgba(224,92,92,0.25)';  color='#e05c5c'; }
           else if (s?.type==='alternatif') { bg='rgba(123,156,223,0.1)'; bc='rgba(123,156,223,0.25)'; color='#7b9cdf'; }
@@ -1588,21 +1582,21 @@ function CalendarView({ sessions, setSessions, settings }) {
           else if (isToday)            { bg='rgba(201,168,76,0.1)';  bc='rgba(201,168,76,0.4)';  color='#c9a84c'; }
           return (
             <div key={i} onClick={() => {
-                if (s && s.validated) {
-                  // Validated sessions → detail panel
+                if (s && (s.validated || partiallyDone)) {
+                  // Validated or partial sessions → detail panel
                   setSelected(null); setTimeout(()=>setSelected(d), 0);
                 } else if (s && s.type==='alternatif') {
                   // Alternatif days → detail panel (shows period)
                   setSelected(null); setTimeout(()=>setSelected(d), 0);
                 } else {
-                  // Off, joker, partial, empty → action modal (can edit/delete)
+                  // Off, joker, empty → action modal (can edit/delete)
                   setSelected(null); openModal(d);
                 }
               }}
               style={{ borderRadius:10, padding:'6px 4px', textAlign:'center', background:bg, border:`1px solid ${bc}`, cursor: (s&&(s.validated||partiallyDone||s.type==='alternatif'||s.type==='off'||s.joker)) || (!s&&(isPast||isToday)) ? 'pointer' : 'default', minHeight:46, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:2 }}>
               <span style={{ fontSize:13, fontWeight:isToday?700:400, color }}>{d}</span>
               {s?.validated && <span style={{ fontSize:9, color:'#5cba7d', fontFamily:'monospace' }}>{s.actualMin}'</span>}
-              {partiallyDone && <span style={{ fontSize:9, color:'#5cba7d88', fontFamily:'monospace' }}>{s.blocks.filter(b=>b.validated).length}/{s.blocks.length}</span>}
+              {partiallyDone && <span style={{ fontSize:9, color:'#5cba7d', fontFamily:'monospace' }}>{s.blocks.filter(b=>b.validated).length}/{s.blocks.length}</span>}
               {s?.joker              && <span style={{ fontSize:11 }}>🃏</span>}
               {s?.type==='off'       && <span style={{ fontSize:11 }}>🚫</span>}
               {s?.type==='alternatif'&& <span style={{ fontSize:11 }}>🎒</span>}
