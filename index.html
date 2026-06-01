@@ -1022,6 +1022,31 @@ function TodayView({ items, settings, sessions, setSessions, setItems }) {
     });
   };
 
+  const handleRegenerate = () => {
+    if (!session) return;
+    // Keep validated blocks, regenerate only non-validated ones
+    const validatedBlocks = session.blocks.filter(b => b.validated);
+    const usedIds = new Set(validatedBlocks.map(b => b.itemId));
+
+    // Generate a fresh session
+    const fresh = generateSession(items, settings, sessions, TODAY);
+
+    // Filter out already-validated items and already-used items from new blocks
+    const newBlocks = fresh.blocks.filter(b => !usedIds.has(b.itemId));
+
+    // Merge: keep validated + add new non-duplicate blocks
+    const merged = [...validatedBlocks, ...newBlocks];
+    const totalMin = merged.reduce((a, b) => a + b.plannedMin, 0);
+
+    setSession(prev => ({
+      ...prev,
+      blocks: merged,
+      totalMin,
+      validated: false,
+      actualMin: validatedBlocks.reduce((a, b) => a + (b.actualMin || 0), 0),
+    }));
+  };
+
   const handleAddExtra = (extra) => {
     setItems(p => p.map(i => i.id === extra.itemId ? { ...i, lastWorked: TODAY, mastery: extra.mastery } : i));
     setSession(prev => {
@@ -1136,9 +1161,20 @@ function TodayView({ items, settings, sessions, setSessions, setItems }) {
         );
       })()}
 
-      {/* Add extra exercise button */}
+      {/* Regenerate + Add extra */}
       {session && !isJoker && (
         <div style={{ marginTop: 16 }}>
+          {/* Regenerate button */}
+          <button onClick={handleRegenerate}
+            style={{ width: '100%', padding: '10px', background: 'transparent', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 10, color: '#666', fontSize: 12, fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, marginBottom: 8 }}>
+            <span style={{ fontSize: 15 }}>🔄</span> Regénérer la session
+          </button>
+        </div>
+      )}
+
+      {/* Add extra exercise button */}
+      {session && !isJoker && (
+        <div style={{ marginTop: 4 }}>
           {!showExtra ? (
             <button onClick={() => setShowExtra(true)} style={{ width: '100%', padding: '10px', background: 'transparent', border: '1px dashed rgba(201,168,76,0.3)', borderRadius: 10, color: '#c9a84c', fontSize: 13, fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
               <span style={{ fontSize: 16 }}>+</span> Ajouter un exercice libre
