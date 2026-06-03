@@ -1600,6 +1600,158 @@ function LibraryView({ items, setItems }) {
   );
 }
 
+// ─── STATS & CHARTS ──────────────────────────────────────────────────────────
+function LineChart({ data, color, unit }) {
+  if (!data || data.length < 2) return (
+    <div style={{ height:120, display:'flex', alignItems:'center', justifyContent:'center', color:'#555', fontSize:12 }}>Pas encore assez de données</div>
+  );
+
+  const vals = data.map(d => d.value);
+  const maxV = Math.max(...vals, 1);
+  const minV = 0;
+  const W = 300, H = 100, PAD = 8;
+  const xStep = (W - PAD*2) / (data.length - 1);
+  const yScale = v => H - PAD - (v - minV) / (maxV - minV) * (H - PAD*2);
+
+  const points = data.map((d, i) => ({ x: PAD + i * xStep, y: yScale(d.value) }));
+  const polyline = points.map(p => `${p.x},${p.y}`).join(' ');
+  const area = `${points[0].x},${H} ` + points.map(p => `${p.x},${p.y}`).join(' ') + ` ${points[points.length-1].x},${H}`;
+
+  return (
+    <div style={{ overflowX:'auto' }}>
+      <svg viewBox={`0 0 ${W} ${H}`} style={{ width:'100%', height:120 }}>
+        {/* Grid lines */}
+        {[0.25, 0.5, 0.75, 1].map((f, i) => (
+          <line key={i} x1={PAD} y1={yScale(maxV*f)} x2={W-PAD} y2={yScale(maxV*f)}
+            stroke="rgba(255,255,255,0.05)" strokeWidth="1" />
+        ))}
+        {/* Y labels */}
+        {[0, Math.round(maxV/2), maxV].map((v, i) => (
+          <text key={i} x={PAD} y={yScale(v)-2} fill="#555" fontSize="7" textAnchor="start">{v}{unit}</text>
+        ))}
+        {/* Area fill */}
+        <polygon points={area} fill={color} opacity="0.08" />
+        {/* Line */}
+        <polyline points={polyline} fill="none" stroke={color} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+        {/* Points */}
+        {points.map((p, i) => (
+          <g key={i}>
+            <circle cx={p.x} cy={p.y} r="3" fill={color} />
+            {data[i].isCurrent && <circle cx={p.x} cy={p.y} r="5" fill="none" stroke={color} strokeWidth="1.5" />}
+          </g>
+        ))}
+        {/* X labels */}
+        {data.map((d, i) => (
+          i % Math.ceil(data.length / 6) === 0 || i === data.length - 1 ? (
+            <text key={i} x={PAD + i * xStep} y={H-1} fill={d.isCurrent ? '#c9a84c' : '#555'} fontSize="7" textAnchor="middle">{d.label}</text>
+          ) : null
+        ))}
+      </svg>
+    </div>
+  );
+}
+
+function StatsCharts({ sessions, settings }) {
+  const [view, setView] = useState('week');
+
+  const weekStartDay = settings?.weekStartDay ?? 4;
+  const DAY_NAMES = ['Dim','Lun','Mar','Mer','Jeu','Ven','Sam'];
+
+  // Helper: get minutes worked for a session
+  const sessionMin = s => {
+    if (s.validated) return s.actualMin || 0;
+    if (s.blocks) return s.blocks.filter(b=>b.validated).reduce((a,b)=>a+(b.actualMin||0),0);
+    return 0;
+  };
+
+  // Current week stats
+  const thisWeekKey = getWeekKey(new Date(), weekStartDay);
+  const thisWeekSessions = sessions.filter(s => getWeekKey(new Date(s.date+'T12:00:00'), weekStartDay) === thisWeekKey && (s.validated || (s.blocks && s.blocks.some(b=>b.validated))));
+  const thisWeekMin = thisWeekSessions.reduce((a,s) => a + sessionMin(s), 0);
+  const thisWeekDays = new Set(thisWeekSessions.map(s=>s.date)).size;
+
+  // Weekly chart data — last 12 weeks
+  const weekData = Array.from({length:12}, (_, i) => {
+    const d = new Date(); d.setDate(d.getDate() - (11-i)*7);
+    const wk = getWeekKey(d, weekStartDay);
+    const wkStart = new Date(wk+'T12:00:00');
+    const mins = sessions
+      .filter(s => getWeekKey(new Date(s.date+'T12:00:00'), weekStartDay) === wk && (s.validated || (s.blocks && s.blocks.some(b=>b.validated))))
+      .reduce((a,s) => a + sessionMin(s), 0);
+    const label = `${wkStart.getDate()}/${wkStart.getMonth()+1}`;
+    return { label, value: mins, isCurrent: wk === thisWeekKey };
+  });
+
+  // Monthly chart data — last 12 months
+  const monthData = Array.from({length:12}, (_, i) => {
+    const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - (11-i));
+    const yr = d.getFullYear(), mo = d.getMonth();
+    const mins = sessions
+      .filter(s => { const sd = new Date(s.date+'T12:00:00'); return sd.getFullYear()===yr && sd.getMonth()===mo && (s.validated||(s.blocks&&s.blocks.some(b=>b.validated))); })
+      .reduce((a,s) => a+sessionMin(s), 0);
+    const MONTHS = ['Jan','Fév','Mar','Avr','Mai','Jun','Jul','Aoû','Sep','Oct','Nov','Déc'];
+    const now = new Date();
+    return { label: MONTHS[mo], value: mins, isCurrent: yr===now.getFullYear()&&mo===now.getMonth() };
+  });
+
+  // Yearly chart data
+  const currentYear = new Date().getFullYear();
+  const years = [...new Set(sessions.map(s => new Date(s.date+'T12:00:00').getFullYear()))].sort();
+  if (!years.includes(currentYear)) years.push(currentYear);
+  const yearData = years.map(yr => {
+    const mins = sessions
+      .filter(s => new Date(s.date+'T12:00:00').getFullYear()===yr && (s.validated||(s.blocks&&s.blocks.some(b=>b.validated))))
+      .reduce((a,s)=>a+sessionMin(s),0);
+    return { label: String(yr), value: mins, isCurrent: yr===currentYear };
+  });
+
+  const formatMin = m => m >= 60 ? `${Math.floor(m/60)}h${m%60?m%60+'':''}` : `${m}'`;
+
+  const chartData = view==='week' ? weekData : view==='month' ? monthData : yearData;
+  const chartTitle = view==='week' ? '12 dernières semaines' : view==='month' ? '12 derniers mois' : 'Par année';
+
+  return (
+    <div style={{ marginTop:24 }}>
+      {/* Current week summary */}
+      <div style={{ background:'rgba(201,168,76,0.06)', border:'1px solid rgba(201,168,76,0.15)', borderRadius:14, padding:'16px', marginBottom:20 }}>
+        <div style={{ fontSize:12, color:'#888', letterSpacing:2, textTransform:'uppercase', marginBottom:12 }}>Cette semaine</div>
+        <div style={{ display:'flex', gap:16 }}>
+          <div style={{ flex:1, textAlign:'center' }}>
+            <div style={{ fontSize:28, fontWeight:700, color:'#c9a84c', fontFamily:'monospace' }}>{formatMin(thisWeekMin)}</div>
+            <div style={{ fontSize:11, color:'#555', marginTop:2 }}>travaillé</div>
+          </div>
+          <div style={{ width:1, background:'rgba(255,255,255,0.06)' }} />
+          <div style={{ flex:1, textAlign:'center' }}>
+            <div style={{ fontSize:28, fontWeight:700, color:'#c9a84c', fontFamily:'monospace' }}>{thisWeekDays}</div>
+            <div style={{ fontSize:11, color:'#555', marginTop:2 }}>jour{thisWeekDays!==1?'s':''}</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Chart selector */}
+      <div style={{ display:'flex', gap:8, marginBottom:16 }}>
+        {[['week','Semaine'],['month','Mois'],['year','Année']].map(([k,l]) => (
+          <button key={k} onClick={()=>setView(k)} style={{ flex:1, padding:'8px', borderRadius:10, border:'1px solid', fontSize:12, fontWeight:600, cursor:'pointer',
+            background: view===k?'rgba(201,168,76,0.15)':'rgba(255,255,255,0.04)',
+            borderColor: view===k?'rgba(201,168,76,0.4)':'rgba(255,255,255,0.1)',
+            color: view===k?'#c9a84c':'#555' }}>{l}</button>
+        ))}
+      </div>
+
+      {/* Chart */}
+      <div style={{ background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.07)', borderRadius:14, padding:'16px 12px' }}>
+        <div style={{ fontSize:12, color:'#888', letterSpacing:1, textTransform:'uppercase', marginBottom:12 }}>
+          {chartTitle}
+          <span style={{ float:'right', color:'#c9a84c', fontFamily:'monospace', fontWeight:700 }}>
+            {formatMin(chartData.reduce((a,d)=>a+d.value,0))} total
+          </span>
+        </div>
+        <LineChart data={chartData} color="#c9a84c" unit="'" />
+      </div>
+    </div>
+  );
+}
+
 // ─── CALENDAR VIEW ────────────────────────────────────────────────────────────
 function CalendarView({ sessions, setSessions, settings }) {
   const now = new Date();
@@ -1690,7 +1842,12 @@ function CalendarView({ sessions, setSessions, settings }) {
               style={{ borderRadius:10, padding:'6px 4px', textAlign:'center', background:bg, border:`1px solid ${bc}`, cursor: (s&&(s.validated||partiallyDone||s.type==='alternatif'||s.type==='off'||s.joker)) || (!s&&(isPast||isToday)) ? 'pointer' : 'default', minHeight:46, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:2 }}>
               <span style={{ fontSize:13, fontWeight:isToday?700:400, color }}>{d}</span>
               {s?.validated && <span style={{ fontSize:9, color:'#5cba7d', fontFamily:'monospace' }}>{s.actualMin}'</span>}
-              {partiallyDone && <span style={{ fontSize:9, color:'#5cba7d', fontFamily:'monospace' }}>{s.blocks.filter(b=>b.validated).length}/{s.blocks.length}</span>}
+              {partiallyDone && (
+                <>
+                  <span style={{ fontSize:9, color:'#5cba7d', fontFamily:'monospace', lineHeight:1 }}>{s.blocks.filter(b=>b.validated).length}/{s.blocks.length}</span>
+                  <span style={{ fontSize:9, color:'#5cba7d', fontFamily:'monospace', lineHeight:1 }}>{s.blocks.filter(b=>b.validated).reduce((a,b)=>a+(b.actualMin||0),0)}'</span>
+                </>
+              )}
               {s?.joker              && <span style={{ fontSize:11 }}>🃏</span>}
               {s?.type==='off'       && <span style={{ fontSize:11 }}>🚫</span>}
               {s?.type==='alternatif'&& <span style={{ fontSize:11 }}>🎒</span>}
@@ -1905,6 +2062,9 @@ function CalendarView({ sessions, setSessions, settings }) {
           </div>
         ))}
       </div>
+
+      {/* Charts section */}
+      <StatsCharts sessions={sessions} settings={settings} />
     </div>
   );
 }
