@@ -38,9 +38,9 @@ const SCOPE = 'https://www.googleapis.com/auth/drive.appdata';
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 const MASTERY = {
-  non_maitrise: { label: "Non maîtrisé",     color: "#e05c5c", weight: 3, timeMin: 15 },
-  fragile:      { label: "Maîtrise fragile",  color: "#e0a83a", weight: 2, timeMin: 12 },
-  bonne:        { label: "Bonne maîtrise",    color: "#5cba7d", weight: 1, timeMin: 8  },
+  non_maitrise: { label: "Non maîtrisé",     color: "#e05c5c", weight: 3 },
+  fragile:      { label: "Maîtrise fragile",  color: "#e0a83a", weight: 2 },
+  bonne:        { label: "Bonne maîtrise",    color: "#5cba7d", weight: 1 },
 };
 const FREQUENCY_WEIGHT = { priority: 5, normal: 2, occasional: 0.3 };
 const MAX_DAYS_UNSEEN   = { priority: 5, normal: 12, occasional: 45 };
@@ -64,6 +64,9 @@ const DEFAULT_SETTINGS = {
   maxDaysUnseenNormal: 12,
   maxDaysUnseenOccasional: 45,
   weekStartDay: 4, // 0=Sun 1=Mon 2=Tue 3=Wed 4=Thu 5=Fri 6=Sat
+  nbGammes: 1,
+  nbLangage: 1,
+  nbMorceaux: 1,
 };
 
 const DEFAULT_ITEMS = [
@@ -358,6 +361,50 @@ function isRevisionDay(dateStr, revDays, sessions) {
   return sessions.filter(s => s.weekKey === wk && s.hasRevision && s.date !== dateStr).length < revDays;
 }
 
+// Estimate total session time for validation
+function estimateSessionTime(settings) {
+  const days = settings.workDaysPerWeek || 6;
+  const revDays = settings.revisionDaysPerWeek || 2;
+  const nb = {
+    gammes: settings.nbGammes || 1,
+    langage: settings.nbLangage || 1,
+    morceaux: settings.nbMorceaux || 1,
+  };
+  const timePerGamme   = settings.gammesDailyMin || 8;
+  const timePerLangage = Math.round((settings.techJazzWeeklyMin || 35) / days / nb.langage);
+  const timePerMorceau = Math.round((settings.morceauxWeeklyMin || 60) / days / nb.morceaux);
+  const timePerRevision = Math.round((settings.revisionsWeeklyMin || 16) / revDays);
+
+  const totalWithRev    = timePerGamme * nb.gammes
+    + timePerLangage * nb.langage
+    + timePerMorceau * nb.morceaux
+    + timePerRevision;
+  const totalWithoutRev = timePerGamme * nb.gammes
+    + timePerLangage * nb.langage
+    + timePerMorceau * nb.morceaux;
+
+  return { timePerGamme, timePerLangage, timePerMorceau, timePerRevision, totalWithRev, totalWithoutRev, nb };
+}
+
+// Validate settings — returns array of error strings (empty = OK)
+function validateSettings(settings) {
+  const errors = [];
+  const est = estimateSessionTime(settings);
+  const cap = settings.sessionCapMin || 50;
+  const MIN = 5;
+
+  if (est.timePerGamme < MIN)
+    errors.push(`Gammes : ${est.timePerGamme} min/item < ${MIN} min minimum`);
+  if (est.timePerLangage < MIN)
+    errors.push(`Langage musical : ${est.timePerLangage} min/item < ${MIN} min minimum`);
+  if (est.timePerMorceau < MIN)
+    errors.push(`Morceaux : ${est.timePerMorceau} min/item < ${MIN} min minimum`);
+  if (est.totalWithRev > cap)
+    errors.push(`Session estimée avec révision : ${est.totalWithRev} min > cap de ${cap} min`);
+
+  return errors;
+}
+
 function generateSession(items, settings, sessions, dateStr) {
   const maxDaysUnseen = {
     priority: settings.maxDaysUnseenPriority || MAX_DAYS_UNSEEN.priority,
@@ -368,23 +415,39 @@ function generateSession(items, settings, sessions, dateStr) {
   const catchupMin = calculateCatchup(sessions, settings, dateStr);
   const hasCatchup = catchupMin > 0;
   const blocks = [];
-  const gamme = pickItem(items.filter(i => i.category === 'gammes' && i.isActive && i.isGroup !== true && !i.paused), dateStr, maxDaysUnseen);
-  if (gamme) {
-    const gammeFamily = gamme.parentId ? items.find(i => i.id === gamme.parentId) : null;
-    blocks.push({ itemId: gamme.id, title: gamme.title, category: 'gammes', plannedMin: settings.gammesDailyMin, validated: false, familyName: gammeFamily?.title || null });
-  }
+  const nbGammes   = settings.nbGammes   || 1;
+  const nbLangage  = settings.nbLangage  || 1;
+  const nbMorceaux = settings.nbMorceaux || 1;
+  const gammeMin   = settings.gammesDailyMin;
+  const langMin    = Math.round(settings.techJazzWeeklyMin / settings.workDaysPerWeek / nbLangage);
+  const morceauMin = Math.round(settings.morceauxWeeklyMin / settings.workDaysPerWeek / nbMorceaux);
 
-  const lang = pickItem(items.filter(i => i.category === 'langage_musical' && i.isActive && i.isGroup !== true && !i.paused), dateStr, maxDaysUnseen);
-  if (lang) {
-    const langFamily = lang.parentId ? items.find(i => i.id === lang.parentId) : null;
-    blocks.push({ itemId: lang.id, title: lang.title, category: 'langage_musical', plannedMin: Math.round(settings.techJazzWeeklyMin / settings.workDaysPerWeek), validated: false, familyName: langFamily?.title || null });
-  }
+  const pickN = (pool, n) => {
+    const picked = []; const used = new Set();
+    for (let i = 0; i < n; i++) {
+      const available = pool.filter(item => !used.has(item.id));
+      if (!available.length) break;
+      const item = pickItem(available, dateStr, maxDaysUnseen);
+      if (!item) break;
+      picked.push(item); used.add(item.id);
+    }
+    return picked;
+  };
 
-  const morceau = pickItem(items.filter(i => i.category === 'morceau' && i.isActive && i.isGroup !== true && !i.paused), dateStr, maxDaysUnseen);
-  if (morceau) {
-    const morceauFamily = morceau.parentId ? items.find(i => i.id === morceau.parentId) : null;
-    blocks.push({ itemId: morceau.id, title: morceau.title, category: 'morceau', plannedMin: (MASTERY[morceau.mastery] || MASTERY.fragile).timeMin, validated: false, familyName: morceauFamily ? morceauFamily.title : null });
-  }
+  pickN(items.filter(i => i.category === 'gammes' && i.isActive && i.isGroup !== true && !i.paused), nbGammes).forEach(item => {
+    const family = item.parentId ? items.find(i => i.id === item.parentId) : null;
+    blocks.push({ itemId: item.id, title: item.title, category: 'gammes', plannedMin: gammeMin, validated: false, familyName: family?.title || null });
+  });
+
+  pickN(items.filter(i => i.category === 'langage_musical' && i.isActive && i.isGroup !== true && !i.paused), nbLangage).forEach(item => {
+    const family = item.parentId ? items.find(i => i.id === item.parentId) : null;
+    blocks.push({ itemId: item.id, title: item.title, category: 'langage_musical', plannedMin: langMin, validated: false, familyName: family?.title || null });
+  });
+
+  pickN(items.filter(i => i.category === 'morceau' && i.isActive && i.isGroup !== true && !i.paused), nbMorceaux).forEach(item => {
+    const family = item.parentId ? items.find(i => i.id === item.parentId) : null;
+    blocks.push({ itemId: item.id, title: item.title, category: 'morceau', plannedMin: morceauMin, validated: false, familyName: family?.title || null });
+  });
 
   const doRevision = isRevisionDay(dateStr, settings.revisionDaysPerWeek, sessions);
   if (doRevision) {
@@ -1163,25 +1226,20 @@ function TodayView({ items, settings, sessions, setSessions, setItems }) {
 
       {/* Regenerate + Add extra */}
       {session && !isJoker && (
-        <div style={{ marginTop: 16 }}>
-          {/* Regenerate button */}
+        <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid rgba(255,255,255,0.06)', display: 'flex', flexDirection: 'column', gap: 8 }}>
           <button onClick={handleRegenerate}
-            style={{ width: '100%', padding: '10px', background: 'transparent', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 10, color: '#666', fontSize: 12, fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, marginBottom: 8 }}>
-            <span style={{ fontSize: 15 }}>🔄</span> Regénérer la session
+            style={{ width: '100%', padding: '11px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 10, color: '#aaa', fontSize: 13, fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+            <span>🔄</span> Regénérer la session
           </button>
-        </div>
-      )}
-
-      {/* Add extra exercise button */}
-      {session && !isJoker && (
-        <div style={{ marginTop: 4 }}>
-          {!showExtra ? (
-            <button onClick={() => setShowExtra(true)} style={{ width: '100%', padding: '10px', background: 'transparent', border: '1px dashed rgba(201,168,76,0.3)', borderRadius: 10, color: '#c9a84c', fontSize: 13, fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
-              <span style={{ fontSize: 16 }}>+</span> Ajouter un exercice libre
-            </button>
-          ) : (
-            <ExtraExercisePanel items={items} onAdd={handleAddExtra} onClose={() => setShowExtra(false)} />
-          )}
+          <div>
+            {!showExtra ? (
+              <button onClick={() => setShowExtra(true)} style={{ width: '100%', padding: '10px', background: 'transparent', border: '1px dashed rgba(201,168,76,0.3)', borderRadius: 10, color: '#c9a84c', fontSize: 13, fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+                <span style={{ fontSize: 16 }}>+</span> Ajouter un exercice libre
+              </button>
+            ) : (
+              <ExtraExercisePanel items={items} onAdd={handleAddExtra} onClose={() => setShowExtra(false)} />
+            )}
+          </div>
         </div>
       )}
 
@@ -1856,7 +1914,15 @@ function SettingsView({ settings, setSettings, forceSave, saveStatus }) {
   const [form, setForm] = useState(settings);
   const set = (k,v) => setForm(f=>({...f,[k]:v}));
 
+  const [validationErrors, setValidationErrors] = useState([]);
+
   const saveAndSchedule = () => {
+    const errors = validateSettings(form);
+    if (errors.length > 0) {
+      setValidationErrors(errors);
+      return;
+    }
+    setValidationErrors([]);
     setSettings(form);
     if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
       navigator.serviceWorker.controller.postMessage({
@@ -1889,6 +1955,27 @@ function SettingsView({ settings, setSettings, forceSave, saveStatus }) {
               <span style={{ fontSize:13, color:'#c9a84c', fontFamily:'monospace', fontWeight:700 }}>{form[key]} min</span>
             </div>
             <input type="range" min={key==='gammesDailyMin'?1:5} max={max} step={step||5} value={form[key]} onChange={e=>set(key,parseInt(e.target.value))} style={{ width:'100%' }} />
+          </div>
+        ))}
+      </div>
+
+      <div style={{ marginBottom:24 }}>
+        <div style={{ fontSize:12, color:'#888', letterSpacing:2, textTransform:'uppercase', marginBottom:14 }}>Items par session</div>
+        {[
+          { key:'nbGammes',   label:'🎼 Gammes',          color:'#7b9cdf' },
+          { key:'nbLangage',  label:'🎨 Langage musical',  color:'#c47fdf' },
+          { key:'nbMorceaux', label:'🎵 Morceaux',         color:'#5cba7d' },
+        ].map(({ key, label, color }) => (
+          <div key={key} style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:12 }}>
+            <span style={{ fontSize:13, color:'#f0e6d0' }}>{label}</span>
+            <div style={{ display:'flex', gap:6 }}>
+              {[1,2,3].map(n => (
+                <button key={n} type="button" onClick={() => set(key, n)} style={{ width:36, height:36, borderRadius:10, border:'1px solid', fontSize:14, fontWeight:700, cursor:'pointer',
+                  background: form[key]===n ? color+'25' : 'rgba(255,255,255,0.04)',
+                  borderColor: form[key]===n ? color : 'rgba(255,255,255,0.1)',
+                  color: form[key]===n ? color : '#555' }}>{n}</button>
+              ))}
+            </div>
           </div>
         ))}
       </div>
@@ -2004,6 +2091,31 @@ function SettingsView({ settings, setSettings, forceSave, saveStatus }) {
           </div>
         ))}
       </div>
+
+      {/* Validation preview */}
+      {(() => {
+        const est = estimateSessionTime(form);
+        const cap = form.sessionCapMin || 50;
+        return (
+          <div style={{ background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.08)', borderRadius:12, padding:'14px 16px', marginBottom:16 }}>
+            <div style={{ fontSize:12, color:'#888', letterSpacing:1, textTransform:'uppercase', marginBottom:10 }}>Estimation session</div>
+            <div style={{ fontSize:13, color:'#f0e6d0', marginBottom:4 }}>
+              Sans révision : <span style={{ color:'#c9a84c', fontFamily:'monospace', fontWeight:700 }}>{est.totalWithoutRev} min</span>
+            </div>
+            <div style={{ fontSize:13, color:'#f0e6d0' }}>
+              Avec révision : <span style={{ color: est.totalWithRev > cap ? '#e05c5c' : '#c9a84c', fontFamily:'monospace', fontWeight:700 }}>{est.totalWithRev} min</span>
+              {est.totalWithRev > cap && <span style={{ color:'#e05c5c', fontSize:11, marginLeft:6 }}>⚠️ dépasse le cap ({cap} min)</span>}
+            </div>
+          </div>
+        );
+      })()}
+
+      {validationErrors.length > 0 && (
+        <div style={{ background:'rgba(224,92,92,0.1)', border:'1px solid rgba(224,92,92,0.3)', borderRadius:12, padding:'14px 16px', marginBottom:14 }}>
+          <div style={{ fontSize:12, color:'#e05c5c', fontWeight:700, marginBottom:8 }}>⚠️ Réglages invalides</div>
+          {validationErrors.map((e,i) => <div key={i} style={{ fontSize:12, color:'#e05c5c', marginBottom:4 }}>• {e}</div>)}
+        </div>
+      )}
 
       <button onClick={saveAndSchedule} style={{ width:'100%', padding:'14px', background:'#c9a84c', border:'none', borderRadius:12, color:'#1a1a18', fontWeight:700, fontSize:15, cursor:'pointer', marginBottom:12 }}>
         Enregistrer les paramètres
