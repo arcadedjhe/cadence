@@ -180,8 +180,12 @@ function useStorage(key, defaultVal) {
               }
               return item;
             });
-          if (key === 'pm_sessions' && Array.isArray(data))
+          if (key === 'pm_sessions' && Array.isArray(data)) {
+            // Migrate old category names
             data = data.map(s => ({ ...s, blocks: Array.isArray(s.blocks) ? s.blocks.map(b => b.category === 'technique_jazz' ? { ...b, category: 'langage_musical' } : b) : s.blocks }));
+            // Remove sessions with invalid or missing dates
+            data = data.filter(s => s.date && !isNaN(new Date(s.date + 'T12:00:00').getTime()));
+          }
           setVal(data);
         }
       } catch(e) { console.error('Drive read:', e); }
@@ -1655,7 +1659,6 @@ function StatsCharts({ sessions, settings }) {
   const [view, setView] = useState('week');
 
   const weekStartDay = settings?.weekStartDay ?? 4;
-  const DAY_NAMES = ['Dim','Lun','Mar','Mer','Jeu','Ven','Sam'];
 
   // Helper: get minutes worked for a session
   const sessionMin = s => {
@@ -1664,9 +1667,14 @@ function StatsCharts({ sessions, settings }) {
     return 0;
   };
 
+  // Safe date helper — skip sessions with invalid dates
+  const validSessions = sessions.filter(s => s.date && !isNaN(new Date(s.date+'T12:00:00').getTime()));
+  const safeWeekKey = s => { try { return getWeekKey(new Date(s.date+'T12:00:00'), weekStartDay); } catch(_) { return ''; } };
+  const isWorked = s => s.validated || (s.blocks && s.blocks.some(b=>b.validated));
+
   // Current week stats
   const thisWeekKey = getWeekKey(new Date(), weekStartDay);
-  const thisWeekSessions = sessions.filter(s => getWeekKey(new Date(s.date+'T12:00:00'), weekStartDay) === thisWeekKey && (s.validated || (s.blocks && s.blocks.some(b=>b.validated))));
+  const thisWeekSessions = validSessions.filter(s => safeWeekKey(s) === thisWeekKey && isWorked(s));
   const thisWeekMin = thisWeekSessions.reduce((a,s) => a + sessionMin(s), 0);
   const thisWeekDays = new Set(thisWeekSessions.map(s=>s.date)).size;
 
@@ -1675,8 +1683,8 @@ function StatsCharts({ sessions, settings }) {
     const d = new Date(); d.setDate(d.getDate() - (11-i)*7);
     const wk = getWeekKey(d, weekStartDay);
     const wkStart = new Date(wk+'T12:00:00');
-    const mins = sessions
-      .filter(s => getWeekKey(new Date(s.date+'T12:00:00'), weekStartDay) === wk && (s.validated || (s.blocks && s.blocks.some(b=>b.validated))))
+    const mins = validSessions
+      .filter(s => safeWeekKey(s) === wk && isWorked(s))
       .reduce((a,s) => a + sessionMin(s), 0);
     const label = `${wkStart.getDate()}/${wkStart.getMonth()+1}`;
     return { label, value: mins, isCurrent: wk === thisWeekKey };
@@ -1686,8 +1694,8 @@ function StatsCharts({ sessions, settings }) {
   const monthData = Array.from({length:12}, (_, i) => {
     const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - (11-i));
     const yr = d.getFullYear(), mo = d.getMonth();
-    const mins = sessions
-      .filter(s => { const sd = new Date(s.date+'T12:00:00'); return sd.getFullYear()===yr && sd.getMonth()===mo && (s.validated||(s.blocks&&s.blocks.some(b=>b.validated))); })
+    const mins = validSessions
+      .filter(s => { const sd = new Date(s.date+'T12:00:00'); return sd.getFullYear()===yr && sd.getMonth()===mo && isWorked(s); })
       .reduce((a,s) => a+sessionMin(s), 0);
     const MONTHS = ['Jan','Fév','Mar','Avr','Mai','Jun','Jul','Aoû','Sep','Oct','Nov','Déc'];
     const now = new Date();
@@ -1696,11 +1704,11 @@ function StatsCharts({ sessions, settings }) {
 
   // Yearly chart data
   const currentYear = new Date().getFullYear();
-  const years = [...new Set(sessions.map(s => new Date(s.date+'T12:00:00').getFullYear()))].sort();
+  const years = [...new Set(validSessions.map(s => new Date(s.date+'T12:00:00').getFullYear()))].filter(y=>!isNaN(y)).sort();
   if (!years.includes(currentYear)) years.push(currentYear);
   const yearData = years.map(yr => {
-    const mins = sessions
-      .filter(s => new Date(s.date+'T12:00:00').getFullYear()===yr && (s.validated||(s.blocks&&s.blocks.some(b=>b.validated))))
+    const mins = validSessions
+      .filter(s => new Date(s.date+'T12:00:00').getFullYear()===yr && isWorked(s))
       .reduce((a,s)=>a+sessionMin(s),0);
     return { label: String(yr), value: mins, isCurrent: yr===currentYear };
   });
