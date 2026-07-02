@@ -1660,8 +1660,9 @@ function StatsCharts({ sessions, settings }) {
 
   const weekStartDay = settings?.weekStartDay ?? 4;
 
-  // Helper: get minutes worked for a session
+  // Helper: get minutes worked for a session (including alternatif)
   const sessionMin = s => {
+    if (s.type === 'alternatif') return s.timeSpent || 0;
     if (s.validated) return s.actualMin || 0;
     if (s.blocks) return s.blocks.filter(b=>b.validated).reduce((a,b)=>a+(b.actualMin||0),0);
     return 0;
@@ -1670,7 +1671,7 @@ function StatsCharts({ sessions, settings }) {
   // Safe date helper — skip sessions with invalid dates
   const validSessions = sessions.filter(s => s.date && !isNaN(new Date(s.date+'T12:00:00').getTime()));
   const safeWeekKey = s => { try { return getWeekKey(new Date(s.date+'T12:00:00'), weekStartDay); } catch(_) { return ''; } };
-  const isWorked = s => s.validated || (s.blocks && s.blocks.some(b=>b.validated));
+  const isWorked = s => (s.type==='alternatif' && (s.timeSpent||0)>0) || s.validated || (s.blocks && s.blocks.some(b=>b.validated));
 
   // Current week stats
   const thisWeekKey = getWeekKey(new Date(), weekStartDay);
@@ -1806,8 +1807,13 @@ function CalendarView({ sessions, setSessions, settings }) {
     setDayModal(null);
   };
 
-  const totalWorked = sessions.filter(s=>s.validated).length;
-  const totalMin = sessions.filter(s=>s.validated).reduce((a,s)=>a+(s.actualMin||0),0);
+  const totalWorked = sessions.filter(s=>s.validated||(s.type==='alternatif'&&(s.timeSpent||0)>0)).length;
+  const totalMin = sessions.reduce((a,s) => {
+    if (s.type==='alternatif') return a+(s.timeSpent||0);
+    if (s.validated) return a+(s.actualMin||0);
+    if (s.blocks) return a+s.blocks.filter(b=>b.validated).reduce((x,b)=>x+(b.actualMin||0),0);
+    return a;
+  }, 0);
 
   return (
     <div>
