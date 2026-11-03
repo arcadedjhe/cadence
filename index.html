@@ -67,6 +67,7 @@ const DEFAULT_SETTINGS = {
   nbGammes: 1,
   nbLangage: 1,
   nbMorceaux: 1,
+  revisionMaxDays: 21,
 };
 
 const DEFAULT_ITEMS = [
@@ -99,6 +100,7 @@ const DriveDB = {
     const r = await this.req(
       `https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=name%3D'${name}'&fields=files(id)`
     );
+    if (!r.ok) throw new Error('LIST_FAILED_' + r.status);
     const d = await r.json();
     if (d.files && d.files[0]) { this.fileIds[name] = d.files[0].id; return d.files[0].id; }
     return null;
@@ -109,6 +111,7 @@ const DriveDB = {
     const id = await this.getFileId(name);
     if (!id) { this.cache[name] = null; return null; }
     const r = await this.req(`https://www.googleapis.com/drive/v3/files/${id}?alt=media`);
+    if (!r.ok) throw new Error('READ_FAILED_' + r.status);
     const data = await r.json();
     this.cache[name] = data;
     return data;
@@ -146,6 +149,54 @@ const DriveDB = {
     }
   },
 
+  // ── Fichiers binaires (photos) dans le dossier caché de l'appli ──
+  async getBlob(name) {
+    const id = await this.getFileId(name);
+    if (!id) return null;
+    const r = await this.req(`https://www.googleapis.com/drive/v3/files/${id}?alt=media`);
+    if (!r.ok) throw new Error('READ_FAILED_' + r.status);
+    return await r.blob();
+  },
+  async setBlob(name, blob) {
+    const id = await this.getFileId(name);
+    if (id) {
+      const r = await this.req(`https://www.googleapis.com/upload/drive/v3/files/${id}?uploadType=media`, {
+        method: 'PATCH', headers: { 'Content-Type': blob.type || 'image/jpeg' }, body: blob,
+      });
+      if (!r.ok) throw new Error('Photo save failed: ' + r.status);
+    } else {
+      const bnd = 'cadencebnd';
+      const meta = JSON.stringify({ name, parents: ['appDataFolder'] });
+      const body = new Blob([
+        `--${bnd}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n--${bnd}\r\nContent-Type: ${blob.type || 'image/jpeg'}\r\n\r\n`,
+        blob, `\r\n--${bnd}--`]);
+      const r = await this.req(`https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id`, {
+        method: 'POST', headers: { 'Content-Type': `multipart/related; boundary=${bnd}` }, body,
+      });
+      if (!r.ok) throw new Error('Photo create failed: ' + r.status);
+      const f = await r.json();
+      this.fileIds[name] = f.id;
+    }
+  },
+  async deleteFile(name) {
+    const id = await this.getFileId(name);
+    if (!id) return;
+    const r = await this.req(`https://www.googleapis.com/drive/v3/files/${id}`, { method: 'DELETE' });
+    if (!r.ok && r.status !== 404) throw new Error('Delete failed: ' + r.status);
+    delete this.fileIds[name];
+  },
+  async listFiles(prefix) {
+    const out = []; let pageToken = '';
+    do {
+      const r = await this.req(`https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&pageSize=1000&fields=nextPageToken,files(id,name,createdTime,size)${pageToken ? '&pageToken=' + encodeURIComponent(pageToken) : ''}`);
+      if (!r.ok) throw new Error('LIST_FAILED_' + r.status);
+      const d = await r.json();
+      (d.files || []).forEach(f => { if (f.name.startsWith(prefix)) { out.push(f); this.fileIds[f.name] = f.id; } });
+      pageToken = d.nextPageToken || '';
+    } while (pageToken);
+    return out;
+  },
+
   // Pending saves queue for when token expires mid-session
   pendingSaves: {},
   queueSave(name, data) {
@@ -163,6 +214,8 @@ const DriveDB = {
 function useStorage(key, defaultVal) {
   const [val, setVal] = useState(defaultVal);
   const [loaded, setLoaded] = useState(false);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const loadFailedRef = useRef(false);
 
   useEffect(() => {
     (async () => {
@@ -186,9 +239,16 @@ function useStorage(key, defaultVal) {
             // Remove sessions with invalid or missing dates
             data = data.filter(s => s.date && !isNaN(new Date(s.date + 'T12:00:00').getTime()));
           }
+          if (key === 'pm_settings' && data && typeof data === 'object' && !Array.isArray(data)) data = { ...defaultVal, ...data };
           setVal(data);
         }
-      } catch(e) { console.error('Drive read:', e); }
+      } catch(e) {
+        console.error('Drive read:', e);
+        // Lecture impossible : on NE doit PAS écrire les valeurs par défaut sur Drive
+        loadFailedRef.current = true;
+        DriveDB.readFailed = true;
+        setLoadFailed(true);
+      }
       setLoaded(true);
     })();
   }, []);
@@ -196,6 +256,7 @@ function useStorage(key, defaultVal) {
   const save = useCallback((updater) => {
     setVal(prev => {
       const next = typeof updater === 'function' ? updater(prev) : updater;
+      if (loadFailedRef.current) return next; // lecture Drive échouée : aucune écriture
       DriveDB.set(key + '.json', next).catch(err => {
         console.error('Save error:', err);
         // Queue for retry
@@ -205,7 +266,7 @@ function useStorage(key, defaultVal) {
     });
   }, [key]);
 
-  return [val, save, loaded];
+  return [val, save, loaded, loadFailed];
 }
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
@@ -325,44 +386,269 @@ function getAlternatifPeriod(sessions, dateStr) {
   return result;
 }
 
-function compressImage(file, maxW = 1200, q = 0.75) {
-  return new Promise(res => {
-    const reader = new FileReader();
-    reader.onload = e => {
-      const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        const r = Math.min(1, maxW / img.width);
-        canvas.width = Math.round(img.width * r); canvas.height = Math.round(img.height * r);
-        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
-        res(canvas.toDataURL('image/jpeg', q));
-      };
-      img.src = e.target.result;
+// ─── PHOTOS (un fichier par photo dans le dossier caché Drive) ────────────────
+// Dans un exercice, item.images contient {id, thumb} : id = fichier Drive, thumb = miniature.
+// (Les anciennes photos, stockées en texte base64 directement, restent lisibles.)
+const PHOTO_PREFIX = 'cadence_img_';
+const photoFileName = id => PHOTO_PREFIX + id + '.jpg';
+const newPhotoId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+
+// Copie locale (IndexedDB) : une photo déjà ouverte s'affiche instantanément, même sans réseau
+const ImgCache = {
+  _db: null,
+  open() {
+    if (!this._db) this._db = new Promise((res, rej) => {
+      try {
+        const r = indexedDB.open('cadence-img', 1);
+        r.onupgradeneeded = () => r.result.createObjectStore('imgs');
+        r.onsuccess = () => res(r.result);
+        r.onerror = () => rej(r.error);
+      } catch (e) { rej(e); }
+    });
+    return this._db;
+  },
+  async get(id) {
+    try {
+      const db = await this.open();
+      return await new Promise(res => {
+        const q = db.transaction('imgs').objectStore('imgs').get(id);
+        q.onsuccess = () => res(q.result || null);
+        q.onerror = () => res(null);
+      });
+    } catch (_) { return null; }
+  },
+  async put(id, blob) {
+    try {
+      const db = await this.open();
+      await new Promise(res => {
+        const tx = db.transaction('imgs', 'readwrite');
+        tx.objectStore('imgs').put(blob, id);
+        tx.oncomplete = tx.onerror = tx.onabort = () => res();
+      });
+    } catch (_) {}
+  },
+  async del(id) {
+    try {
+      const db = await this.open();
+      await new Promise(res => {
+        const tx = db.transaction('imgs', 'readwrite');
+        tx.objectStore('imgs').delete(id);
+        tx.oncomplete = tx.onerror = tx.onabort = () => res();
+      });
+    } catch (_) {}
+  },
+};
+
+async function getPhotoBlob(id) {
+  const cached = await ImgCache.get(id);
+  if (cached) return cached;
+  const blob = await DriveDB.getBlob(photoFileName(id));
+  if (blob) await ImgCache.put(id, blob);
+  return blob;
+}
+const photoUrls = {};
+async function getPhotoUrl(id) {
+  if (photoUrls[id]) return photoUrls[id];
+  const b = await getPhotoBlob(id);
+  if (!b) return null;
+  return (photoUrls[id] = URL.createObjectURL(b));
+}
+
+// Prépare une photo : grande image (2000 px max, JPEG 80 %) + miniature (300 px)
+async function makePhoto(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error('IMG')); i.src = url; });
+    const draw = maxSide => {
+      const r = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight));
+      const cv = document.createElement('canvas');
+      cv.width = Math.round(img.naturalWidth * r); cv.height = Math.round(img.naturalHeight * r);
+      cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+      return cv;
     };
-    reader.readAsDataURL(file);
+    const blob = await new Promise((res, rej) => draw(2000).toBlob(b => b ? res(b) : rej(new Error('BLOB')), 'image/jpeg', 0.8));
+    return { id: newPhotoId(), thumb: draw(300).toDataURL('image/jpeg', 0.6), blob, pending: true };
+  } finally { URL.revokeObjectURL(url); }
+}
+
+// Envoie sur Drive les photos ajoutées dans le formulaire ; renvoie les références {id, thumb}
+async function commitPhotos(images) {
+  if (DriveDB.readFailed && images.some(im => im && im.pending)) throw new Error('LOAD_FAILED');
+  const out = [];
+  for (const im of images) {
+    if (im && im.pending) {
+      await DriveDB.setBlob(photoFileName(im.id), im.blob);
+      await ImgCache.put(im.id, im.blob);
+      out.push({ id: im.id, thumb: im.thumb });
+    } else out.push(im);
+  }
+  return out;
+}
+
+function collectPhotoIds(items) {
+  const ids = [];
+  (items || []).forEach(i => (i.images || []).forEach(im => {
+    if (im && typeof im === 'object' && im.id && !ids.includes(im.id)) ids.push(im.id);
+  }));
+  return ids;
+}
+
+// ─── SAUVEGARDE / IMPORT (fichier .json sans photos, .zip avec photos) ───────
+function loadJSZip() {
+  if (window.JSZip) return Promise.resolve(window.JSZip);
+  return new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src = 'https://unpkg.com/jszip@3.10.1/dist/jszip.min.js';
+    s.onload = () => res(window.JSZip);
+    s.onerror = () => rej(new Error('Impossible de charger la bibliothèque ZIP (connexion ?)'));
+    document.head.appendChild(s);
   });
 }
 
+async function buildBackup(data, onProgress) {
+  const payload = { app: 'cadence', version: 2, exportedAt: new Date().toISOString(), items: data.items, sessions: data.sessions, settings: data.settings };
+  const ids = collectPhotoIds(data.items);
+  const day = localISO(new Date());
+  if (!ids.length) {
+    return { blob: new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }), filename: 'cadence-sauvegarde-' + day + '.json', photos: 0, missing: 0 };
+  }
+  const JSZip = await loadJSZip();
+  const zip = new JSZip();
+  zip.file('cadence.json', JSON.stringify(payload, null, 2));
+  let n = 0, missing = 0;
+  for (const id of ids) {
+    onProgress && onProgress('Photos ' + (++n) + '/' + ids.length + '…');
+    let blob = null;
+    try { blob = await getPhotoBlob(id); } catch (_) {}
+    if (blob) zip.file('photos/' + id + '.jpg', blob); else missing++;
+  }
+  onProgress && onProgress('Création du fichier…');
+  const blob = await zip.generateAsync({ type: 'blob', compression: 'STORE' });
+  return { blob, filename: 'cadence-sauvegarde-' + day + '.zip', photos: ids.length - missing, missing };
+}
+
+async function parseBackup(file) {
+  let text, zip = null;
+  if (/\.json$/i.test(file.name)) text = await file.text();
+  else {
+    const JSZip = await loadJSZip();
+    zip = await JSZip.loadAsync(file);
+    const entry = zip.file('cadence.json');
+    if (!entry) throw new Error('Fichier non reconnu (cadence.json introuvable).');
+    text = await entry.async('string');
+  }
+  let data;
+  try { data = JSON.parse(text); } catch (_) { throw new Error('Fichier illisible.'); }
+  if (!data || !Array.isArray(data.items) || !Array.isArray(data.sessions) || !data.settings || typeof data.settings !== 'object')
+    throw new Error('Fichier de sauvegarde non reconnu.');
+  const photoNames = zip ? Object.keys(zip.files).filter(n => /^photos\/.+\.jpg$/i.test(n)) : [];
+  return { data, zip, photoNames };
+}
+
+async function restorePhotos(zip, names, onProgress) {
+  const existing = new Set((await DriveDB.listFiles(PHOTO_PREFIX)).map(f => f.name));
+  let n = 0, uploaded = 0;
+  for (const name of names) {
+    const id = name.replace(/^photos\//, '').replace(/\.jpg$/i, '');
+    onProgress && onProgress('Photos ' + (++n) + '/' + names.length + '…');
+    if (existing.has(photoFileName(id))) continue;
+    const bytes = await zip.file(name).async('uint8array');
+    const blob = new Blob([bytes], { type: 'image/jpeg' });
+    await DriveDB.setBlob(photoFileName(id), blob);
+    await ImgCache.put(id, blob);
+    uploaded++;
+  }
+  return uploaded;
+}
+
 // ─── ALGORITHM ───────────────────────────────────────────────────────────────
+// Délai (en jours) avant qu'un item devienne "obligatoire" : celui de sa fréquence,
+// doublé si l'item est bien maîtrisé.
+function urgencyDelay(item, mdu) {
+  const freq = FREQUENCY_WEIGHT[item.frequency] !== undefined ? item.frequency : 'normal';
+  return (mdu || MAX_DAYS_UNSEEN)[freq] * (item.mastery === 'bonne' ? 2 : 1);
+}
+
 function pickItem(items, dateStr, maxDaysUnseen) {
   if (!items.length) return null;
   const mdu = maxDaysUnseen || MAX_DAYS_UNSEEN;
-  const weights = items.map(item => {
-    const freq = item.frequency || 'normal';
+  const rand = arr => arr[Math.floor(Math.random() * arr.length)];
+  const info = items.map(item => {
+    const freq = FREQUENCY_WEIGHT[item.frequency] !== undefined ? item.frequency : 'normal';
     const daysSince = item.lastWorked
-      ? Math.floor((new Date(dateStr) - new Date(item.lastWorked)) / 86400000) : 999;
-    if (daysSince >= mdu[freq]) return 999;
-    return FREQUENCY_WEIGHT[freq] * ((MASTERY[item.mastery] || MASTERY.fragile).weight) * Math.min(daysSince + 1, 10);
+      ? Math.floor((new Date(dateStr) - new Date(item.lastWorked)) / 86400000) : NaN;
+    const never = !item.lastWorked || isNaN(daysSince);
+    const overdue = !never && daysSince >= urgencyDelay(item, mdu);
+    return { item, freq, daysSince, never, overdue };
   });
-  const total = weights.reduce((a,b) => a+b, 0);
+
+  // 1) Items urgents, niveau de priorité par niveau (⭐ puis — puis 🌙) :
+  //    dans un niveau, les jamais travaillés d'abord, puis ceux dont le délai est dépassé
+  //    (tirage au hasard entre eux).
+  for (const freq of ['priority', 'normal', 'occasional']) {
+    const tier = info.filter(x => x.freq === freq);
+    const never = tier.filter(x => x.never);
+    if (never.length) return rand(never).item;
+    const late = tier.filter(x => x.overdue);
+    if (late.length) return rand(late).item;
+  }
+
+  // 2) Sinon : tirage pondéré fréquence × maîtrise × récence
+  const weights = info.map(x =>
+    FREQUENCY_WEIGHT[x.freq] * ((MASTERY[x.item.mastery] || MASTERY.fragile).weight) * Math.min(x.daysSince + 1, 10));
+  const total = weights.reduce((a, b) => a + b, 0);
   let r = Math.random() * total;
   for (let i = 0; i < items.length; i++) { r -= weights[i]; if (r <= 0) return items[i]; }
   return items[items.length - 1];
 }
 
-function isRevisionDay(dateStr, revDays, sessions) {
-  const wk = getWeekKey(new Date(dateStr));
-  return sessions.filter(s => s.weekKey === wk && s.hasRevision && s.date !== dateStr).length < revDays;
+// Dates locales (sans décalage de fuseau horaire)
+function localISO(d) {
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+function weekStartOf(dateStr, weekStartDay) {
+  const d = new Date(dateStr + 'T12:00:00');
+  d.setDate(d.getDate() - ((d.getDay() - weekStartDay + 7) % 7));
+  return localISO(d);
+}
+
+// Révisions étalées sur la semaine. Seules les révisions VALIDÉES comptent comme faites :
+// une révision prévue mais non faite reste due les jours suivants.
+// Objectif cumulé à la fin du jour n (0 = 1er jour de la semaine) : ceil(révisions × (n+1) / 7)
+function isRevisionDay(dateStr, revDays, sessions, weekStartDay = 4) {
+  if (!revDays) return false;
+  const ws = weekStartOf(dateStr, weekStartDay);
+  const dayIdx = (new Date(dateStr + 'T12:00:00').getDay() - weekStartDay + 7) % 7;
+  const expected = Math.ceil(revDays * (dayIdx + 1) / 7);
+  const done = sessions.filter(s =>
+    s.date && s.date !== dateStr && weekStartOf(s.date, weekStartDay) === ws &&
+    Array.isArray(s.blocks) && s.blocks.some(b => b.category === 'revision' && b.validated)
+  ).length;
+  return done < expected;
+}
+
+// Choix du morceau à réviser (pool = morceaux hors "en cours", non en pause).
+// Référence = dernière révision (à défaut dernier travail). Délai doublé si bien maîtrisé.
+// 1) jamais révisé ni travaillé  2) délai dépassé (le plus en retard d'abord)
+// 3) tirage pondéré par la maîtrise (🔴 3 / 🟡 2 / 🟢 1) × temps écoulé (plafonné à 30 j)
+function pickRevision(pool, dateStr, delayDays) {
+  if (!pool.length) return null;
+  const info = pool.map(item => {
+    const ref = item.lastRevised || item.lastWorked;
+    const days = ref ? Math.floor((new Date(dateStr) - new Date(ref)) / 86400000) : NaN;
+    const never = !ref || isNaN(days);
+    const delay = delayDays * (item.mastery === 'bonne' ? 2 : 1);
+    return { item, days, never, delay, overdue: !never && days >= delay };
+  });
+  const never = info.filter(x => x.never);
+  if (never.length) return never[Math.floor(Math.random() * never.length)].item;
+  const late = info.filter(x => x.overdue).sort((a, b) => (b.days / b.delay) - (a.days / a.delay));
+  if (late.length) return late[0].item;
+  const weights = info.map(x => ((MASTERY[x.item.mastery] || MASTERY.fragile).weight) * Math.min(x.days + 1, 30));
+  const total = weights.reduce((a, b) => a + b, 0);
+  let r = Math.random() * total;
+  for (let i = 0; i < info.length; i++) { r -= weights[i]; if (r <= 0) return info[i].item; }
+  return info[info.length - 1].item;
 }
 
 // Estimate total session time for validation
@@ -403,6 +689,8 @@ function validateSettings(settings) {
     errors.push(`Langage musical : ${est.timePerLangage} min/item < ${MIN} min minimum`);
   if (est.timePerMorceau < MIN)
     errors.push(`Morceaux : ${est.timePerMorceau} min/item < ${MIN} min minimum`);
+  if (est.timePerRevision < MIN)
+    errors.push(`Révision : ${est.timePerRevision} min par séance (budget ÷ ${settings.revisionDaysPerWeek || 2} révisions/sem.) < ${MIN} min minimum`);
   if (est.totalWithRev > cap)
     errors.push(`Session estimée avec révision : ${est.totalWithRev} min > cap de ${cap} min`);
 
@@ -453,10 +741,11 @@ function generateSession(items, settings, sessions, dateStr) {
     blocks.push({ itemId: item.id, title: item.title, category: 'morceau', plannedMin: morceauMin, validated: false, familyName: family?.title || null });
   });
 
-  const doRevision = isRevisionDay(dateStr, settings.revisionDaysPerWeek, sessions);
+  const doRevision = isRevisionDay(dateStr, settings.revisionDaysPerWeek, sessions, settings.weekStartDay ?? 4);
   if (doRevision) {
-    const rev = [...items.filter(i => i.category === 'morceau' && !i.isActive && i.isGroup !== true && !i.paused)]
-      .sort((a,b) => (a.lastRevised ? new Date(a.lastRevised) : new Date(0)) - (b.lastRevised ? new Date(b.lastRevised) : new Date(0)))[0];
+    const rev = pickRevision(
+      items.filter(i => i.category === 'morceau' && !i.isActive && i.isGroup !== true && !i.paused),
+      dateStr, settings.revisionMaxDays || 21);
     if (rev) blocks.push({ itemId: rev.id, title: rev.title, category: 'revision', plannedMin: Math.round(settings.revisionsWeeklyMin / settings.revisionDaysPerWeek), validated: false });
   }
 
@@ -516,23 +805,86 @@ function generateSession(items, settings, sessions, dateStr) {
   }
 
   const weekStartDay = settings.weekStartDay ?? 4;
-  return { blocks, totalMin, weekKey: getWeekKey(new Date(dateStr), weekStartDay), hasRevision: doRevision, catchupMin: hasCatchup ? catchupMin : 0 };
+  return { blocks, totalMin, weekKey: getWeekKey(new Date(dateStr), weekStartDay), hasRevision: blocks.some(b => b.category === 'revision'), catchupMin: hasCatchup ? catchupMin : 0 };
 }
 
 // ─── IMAGE GALLERY ────────────────────────────────────────────────────────────
+// Image zoomable (pincement à 2 doigts, glisser, double-tap pour zoomer / revenir)
+function ZoomableImage({ src }) {
+  const [t, setT] = useState({ s: 1, x: 0, y: 0 });
+  const pts = useRef(new Map());
+  const lastTap = useRef(0);
+  const down = e => { e.currentTarget.setPointerCapture(e.pointerId); pts.current.set(e.pointerId, { x: e.clientX, y: e.clientY }); };
+  const move = e => {
+    const prev = pts.current.get(e.pointerId);
+    if (!prev) return;
+    const cur = { x: e.clientX, y: e.clientY };
+    if (pts.current.size === 2) {
+      const [a, b] = [...pts.current.values()];
+      const oldD = Math.hypot(a.x - b.x, a.y - b.y);
+      pts.current.set(e.pointerId, cur);
+      const [a2, b2] = [...pts.current.values()];
+      const newD = Math.hypot(a2.x - b2.x, a2.y - b2.y);
+      if (oldD > 0) setT(o => { const s = Math.min(6, Math.max(1, o.s * newD / oldD)); return s === 1 ? { s: 1, x: 0, y: 0 } : { ...o, s }; });
+    } else {
+      pts.current.set(e.pointerId, cur);
+      setT(o => o.s > 1 ? { ...o, x: o.x + cur.x - prev.x, y: o.y + cur.y - prev.y } : o);
+    }
+  };
+  const up = e => {
+    const wasSingle = pts.current.size === 1;
+    pts.current.delete(e.pointerId);
+    if (wasSingle) {
+      const now = Date.now();
+      if (now - lastTap.current < 300) setT(o => o.s > 1 ? { s: 1, x: 0, y: 0 } : { s: 2.5, x: 0, y: 0 });
+      lastTap.current = now;
+    }
+  };
+  const wheel = e => setT(o => { const s = Math.min(6, Math.max(1, o.s * (e.deltaY < 0 ? 1.15 : 1 / 1.15))); return s === 1 ? { s: 1, x: 0, y: 0 } : { ...o, s }; });
+  return (
+    <img src={src} alt="" draggable={false} onClick={e => e.stopPropagation()}
+      onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={up} onWheel={wheel}
+      style={{ maxWidth: '100%', maxHeight: '82vh', objectFit: 'contain', borderRadius: 6, touchAction: 'none', userSelect: 'none',
+        transform: `translate(${t.x}px, ${t.y}px) scale(${t.s})`, transition: pts.current.size ? 'none' : 'transform 0.15s' }} />
+  );
+}
+
+// Charge la photo complète (copie locale, sinon Drive) ; affiche la miniature en attendant
+function PhotoViewer({ im }) {
+  const legacy = typeof im === 'string';
+  const [url, setUrl] = useState(legacy ? im : null);
+  const [err, setErr] = useState(false);
+  useEffect(() => {
+    if (legacy) { setUrl(im); return; }
+    let alive = true;
+    setUrl(null); setErr(false);
+    getPhotoUrl(im.id).then(u => { if (!alive) return; if (u) setUrl(u); else setErr(true); }).catch(() => alive && setErr(true));
+    return () => { alive = false; };
+  }, [legacy ? im : im.id]);
+  if (url) return <ZoomableImage src={url} />;
+  return (
+    <div style={{ textAlign: 'center' }} onClick={e => e.stopPropagation()}>
+      {!legacy && im.thumb && <img src={im.thumb} alt="" style={{ maxWidth: '100%', maxHeight: '60vh', filter: 'blur(2px)', borderRadius: 6, opacity: 0.6 }} />}
+      <div style={{ color: err ? '#e05c5c' : '#888', fontSize: 13, marginTop: 10 }}>
+        {err ? 'Photo introuvable sur Drive (hors connexion ?). Réessaie avec du réseau.' : 'Chargement de la photo…'}
+      </div>
+    </div>
+  );
+}
+
 function ImageGallery({ images }) {
   const [lb, setLb] = useState(null);
   return (
     <>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-        {images.map((src, i) => (
-          <img key={i} src={src} alt="" onClick={() => setLb(i)}
+        {images.map((im, i) => (
+          <img key={i} src={(im && im.thumb) || im} alt="" onClick={() => setLb(i)}
             style={{ width: 76, height: 76, objectFit: 'cover', borderRadius: 8, border: '1px solid rgba(255,255,255,0.1)', cursor: 'pointer' }} />
         ))}
       </div>
       {lb !== null && (
-        <div onClick={() => setLb(null)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.95)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
-          <img src={images[lb]} alt="" style={{ maxWidth: '100%', maxHeight: '80vh', objectFit: 'contain', borderRadius: 10 }} onClick={e => e.stopPropagation()} />
+        <div onClick={() => setLb(null)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.95)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16, overflow: 'hidden' }}>
+          <PhotoViewer key={lb} im={images[lb]} />
           <div style={{ position: 'absolute', bottom: 24, left: 0, right: 0, display: 'flex', gap: 16, justifyContent: 'center', alignItems: 'center' }}>
             <button onClick={e => { e.stopPropagation(); setLb(l => Math.max(0,l-1)); }} disabled={lb===0}
               style={{ padding: '8px 18px', background: 'rgba(255,255,255,0.12)', border: 'none', borderRadius: 10, color: '#fff', fontSize: 20, cursor: lb===0?'default':'pointer', opacity: lb===0?0.3:1 }}>‹</button>
@@ -540,6 +892,7 @@ function ImageGallery({ images }) {
             <button onClick={e => { e.stopPropagation(); setLb(l => Math.min(images.length-1,l+1)); }} disabled={lb===images.length-1}
               style={{ padding: '8px 18px', background: 'rgba(255,255,255,0.12)', border: 'none', borderRadius: 10, color: '#fff', fontSize: 20, cursor: lb===images.length-1?'default':'pointer', opacity: lb===images.length-1?0.3:1 }}>›</button>
           </div>
+          <div style={{ position: 'absolute', top: 20, left: 16, color: '#555', fontSize: 11 }}>Pince pour zoomer · double-tap</div>
           <button onClick={() => setLb(null)} style={{ position: 'absolute', top: 16, right: 16, width: 32, height: 32, borderRadius: '50%', background: '#e05c5c', border: 'none', color: '#fff', fontSize: 18, cursor: 'pointer', fontWeight: 700 }}>×</button>
         </div>
       )}
@@ -1261,6 +1614,33 @@ function TodayView({ items, settings, sessions, setSessions, setItems }) {
 function ItemForm({ initial, onSave, onCancel }) {
   const [form, setForm] = useState(initial || { title: '', category: 'morceau', isActive: true, frequency: 'normal', mastery: 'non_maitrise', notes: '', images: [] });
   const set = (k,v) => setForm(f => ({ ...f, [k]: v }));
+  const [saving, setSaving] = useState(false);
+  const [busyPhotos, setBusyPhotos] = useState(false);
+  const [err, setErr] = useState('');
+
+  const addPhotos = async e => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = '';
+    if (!files.length) return;
+    setBusyPhotos(true); setErr('');
+    try {
+      const out = [];
+      for (const f of files) out.push(await makePhoto(f));
+      setForm(fm => ({ ...fm, images: [...(fm.images || []), ...out] }));
+    } catch (_) { setErr("Impossible de préparer une des photos."); }
+    setBusyPhotos(false);
+  };
+
+  const handleSave = async () => {
+    setSaving(true); setErr('');
+    try {
+      const images = await commitPhotos(form.images || []);
+      onSave({ ...form, images, frequency: form.frequency || 'normal' });
+    } catch (e) {
+      setErr(e.message === 'LOAD_FAILED' ? "Lecture Drive impossible : recharge l'appli avant d'ajouter des photos." : "L'envoi des photos a échoué (connexion ?). Réessaie.");
+      setSaving(false);
+    }
+  };
 
   return (
     <div style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 14, padding: 18, marginBottom: 12 }}>
@@ -1313,23 +1693,23 @@ function ItemForm({ initial, onSave, onCancel }) {
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
           {(form.images||[]).map((src,idx) => (
             <div key={idx} style={{ position: 'relative', width: 80, height: 80 }}>
-              <img src={src} alt="" style={{ width: 80, height: 80, objectFit: 'cover', borderRadius: 8 }} />
+              <img src={(src && src.thumb) || src} alt="" style={{ width: 80, height: 80, objectFit: 'cover', borderRadius: 8, opacity: src && src.pending ? 0.75 : 1 }} />
               <button onClick={() => set('images', (form.images||[]).filter((_,i)=>i!==idx))} style={{ position: 'absolute', top: -6, right: -6, width: 22, height: 22, borderRadius: '50%', background: '#e05c5c', border: 'none', color: '#fff', fontSize: 14, cursor: 'pointer', fontWeight: 700 }}>×</button>
             </div>
           ))}
           <label style={{ width: 80, height: 80, borderRadius: 10, border: '2px dashed rgba(255,255,255,0.15)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: '#555', gap: 4 }}>
-            <span style={{ fontSize: 24 }}>📷</span>
-            <span style={{ fontSize: 10 }}>Ajouter</span>
-            <input type="file" accept="image/*" multiple style={{ display: 'none' }}
-              onChange={async e => { const files = Array.from(e.target.files); const imgs = await Promise.all(files.map(f => compressImage(f))); set('images', [...(form.images||[]), ...imgs]); e.target.value = ''; }} />
+            <span style={{ fontSize: 24 }}>{busyPhotos ? '⏳' : '📷'}</span>
+            <span style={{ fontSize: 10 }}>{busyPhotos ? 'Préparation' : 'Ajouter'}</span>
+            <input type="file" accept="image/*" multiple style={{ display: 'none' }} disabled={busyPhotos || saving} onChange={addPhotos} />
           </label>
         </div>
       </div>
 
+      {err && <div style={{ fontSize: 12, color: '#e05c5c', marginBottom: 10 }}>⚠️ {err}</div>}
       <div style={{ display: 'flex', gap: 10 }}>
-        <button onClick={() => onSave({ ...form, frequency: form.frequency||'normal' })} disabled={!form.title.trim()}
-          style={{ flex: 1, padding: '12px', background: form.title.trim()?'#c9a84c':'rgba(255,255,255,0.06)', border: 'none', borderRadius: 12, color: form.title.trim()?'#1a1a18':'#555', fontWeight: 700, fontSize: 15, cursor: form.title.trim()?'pointer':'default' }}>
-          {initial ? 'Enregistrer' : 'Ajouter'}
+        <button onClick={handleSave} disabled={!form.title.trim() || saving || busyPhotos}
+          style={{ flex: 1, padding: '12px', background: form.title.trim() && !saving && !busyPhotos?'#c9a84c':'rgba(255,255,255,0.06)', border: 'none', borderRadius: 12, color: form.title.trim() && !saving && !busyPhotos?'#1a1a18':'#555', fontWeight: 700, fontSize: 15, cursor: form.title.trim() && !saving && !busyPhotos?'pointer':'default' }}>
+          {saving ? 'Envoi des photos…' : initial ? 'Enregistrer' : 'Ajouter'}
         </button>
         <button onClick={onCancel} style={{ padding: '12px 20px', background: 'transparent', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 12, color: '#888', cursor: 'pointer', fontSize: 15 }}>Annuler</button>
       </div>
@@ -1365,7 +1745,7 @@ function GroupForm({ onSave, onCancel }) {
 }
 
 // ─── LIBRARY VIEW ─────────────────────────────────────────────────────────────
-function LibraryView({ items, setItems }) {
+function LibraryView({ items, setItems, settings }) {
   const [adding, setAdding] = useState(false);
   const [addingType, setAddingType] = useState(null); // 'item' | 'group'
   const [addingVariantTo, setAddingVariantTo] = useState(null); // parentId
@@ -1463,7 +1843,10 @@ function LibraryView({ items, setItems }) {
                           </div>
                           {/* Vu depuis */}
                           {!item.paused && (() => {
-                            const freq = item.frequency||'normal'; const maxDays = MAX_DAYS_UNSEEN[freq];
+                            const maxDays = urgencyDelay(item, {
+                              priority: (settings&&settings.maxDaysUnseenPriority)||MAX_DAYS_UNSEEN.priority,
+                              normal: (settings&&settings.maxDaysUnseenNormal)||MAX_DAYS_UNSEEN.normal,
+                              occasional: (settings&&settings.maxDaysUnseenOccasional)||MAX_DAYS_UNSEEN.occasional });
                             const daysSince = item.lastWorked ? Math.floor((new Date(TODAY)-new Date(item.lastWorked))/86400000) : null;
                             const overdue = daysSince!==null && daysSince>=maxDays;
                             const color = overdue?'#e05c5c':daysSince===null?'#555':daysSince>maxDays*0.7?'#e0a83a':'#555';
@@ -2084,7 +2467,19 @@ function CalendarView({ sessions, setSessions, settings }) {
 }
 
 // ─── SETTINGS VIEW ────────────────────────────────────────────────────────────
-function SettingsView({ settings, setSettings, forceSave, saveStatus }) {
+function SettingsView({ settings, setSettings, forceSave, saveStatus, onExport, onImport, onCleanup }) {
+  const [lastExport, setLastExport] = useState(() => { try { return localStorage.getItem('cadence_last_export'); } catch(_) { return null; } });
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const run = async (fn) => {
+    setBusy(true); setMsg('');
+    try {
+      const r = await fn(m => setMsg(m));
+      setMsg(r.msg || '');
+      if (r.exported) setLastExport(localISO(new Date()));
+    } catch (e) { setMsg('❌ ' + (e && e.message ? e.message : 'Erreur')); }
+    setBusy(false);
+  };
   const [form, setForm] = useState(settings);
   const set = (k,v) => setForm(f=>({...f,[k]:v}));
 
@@ -2250,11 +2645,12 @@ function SettingsView({ settings, setSettings, forceSave, saveStatus }) {
           </div>
         </div>
 
-        <div style={{ fontSize:13, color:'#f0e6d0', marginBottom:10 }}>Relance auto si non vu depuis :</div>
+        <div style={{ fontSize:13, color:'#f0e6d0', marginBottom:10 }}>Relance auto si non vu depuis : <span style={{ fontSize:11, color:'#666' }}>(délai doublé si bien maîtrisé)</span></div>
         {[
           {key:'maxDaysUnseenPriority',   label:'⭐ Prioritaire', color:'#c9a84c', min:2,  max:14 },
           {key:'maxDaysUnseenNormal',     label:'— Normal',       color:'#888',    min:5,  max:30 },
           {key:'maxDaysUnseenOccasional', label:'🌙 Occasionnel', color:'#7b9cdf', min:14, max:90 },
+          {key:'revisionMaxDays',         label:'🔁 Révision (non révisé depuis)', color:'#5cba7d', min:7, max:90 },
         ].map(({key,label,color,min,max}) => (
           <div key={key} style={{ marginBottom:14 }}>
             <div style={{ display:'flex', justifyContent:'space-between', marginBottom:6 }}>
@@ -2313,15 +2709,45 @@ function SettingsView({ settings, setSettings, forceSave, saveStatus }) {
                                    <><span style={{fontSize:16}}>💾</span> Forcer la sauvegarde</>}
         </button>
       </div>
+
+      {/* Sauvegarde de secours : export / import / nettoyage */}
+      <div style={{ background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.08)', borderRadius:12, padding:'14px 16px', marginTop:16 }}>
+        <div style={{ fontSize:12, color:'#888', letterSpacing:2, textTransform:'uppercase', marginBottom:10 }}>Sauvegarde de secours</div>
+        <div style={{ fontSize:12, color:'#555', marginBottom:12 }}>Tes données et tes photos sont déjà sur Drive : sur un nouveau téléphone, il suffit d'ouvrir l'appli et de te connecter au même compte Google. Le fichier ci-dessous sert de copie de secours (par exemple si tu changes de compte Google).</div>
+        <button disabled={busy} onClick={() => run(onExport)} style={{
+          width:'100%', padding:'12px', borderRadius:10, border:'1px solid rgba(201,168,76,0.3)',
+          background:'rgba(201,168,76,0.1)', color:'#c9a84c', fontWeight:600, fontSize:14, cursor: busy?'default':'pointer', opacity: busy?0.6:1,
+          display:'flex', alignItems:'center', justifyContent:'center', gap:8 }}>
+          <span style={{fontSize:16}}>📥</span> Exporter mes données et photos
+        </button>
+        <label style={{
+          width:'100%', padding:'12px', borderRadius:10, border:'1px solid rgba(255,255,255,0.12)', marginTop:10, boxSizing:'border-box',
+          background:'rgba(255,255,255,0.05)', color:'#888', fontWeight:600, fontSize:14, cursor: busy?'default':'pointer', opacity: busy?0.6:1,
+          display:'flex', alignItems:'center', justifyContent:'center', gap:8 }}>
+          <span style={{fontSize:16}}>📤</span> Importer une sauvegarde
+          <input type="file" accept=".zip,.json,application/zip,application/json" disabled={busy} style={{ display:'none' }}
+            onChange={e => { const f = e.target.files && e.target.files[0]; e.target.value = ''; if (f) run(p => onImport(f, p)); }} />
+        </label>
+        <button disabled={busy} onClick={() => run(onCleanup)} style={{
+          width:'100%', padding:'10px', borderRadius:10, border:'1px solid rgba(255,255,255,0.08)', marginTop:10,
+          background:'transparent', color:'#555', fontWeight:600, fontSize:12, cursor: busy?'default':'pointer', opacity: busy?0.6:1 }}>
+          🧹 Supprimer les photos inutilisées de Drive
+        </button>
+        {(busy || msg) && <div style={{ fontSize:12, color: msg.startsWith('❌') || msg.includes('⚠️') ? '#e05c5c' : '#c8bfa8', marginTop:10, textAlign:'center', whiteSpace:'pre-wrap' }}>{busy && !msg ? '⏳ En cours…' : msg}</div>}
+        <div style={{ fontSize:11, color:'#555', marginTop:8, textAlign:'center' }}>
+          {lastExport ? 'Dernier export : ' + lastExport.split('-').reverse().join('/') : 'Aucun export effectué sur cet appareil'}
+        </div>
+      </div>
     </div>
   );
 }
 
 // ─── APP ──────────────────────────────────────────────────────────────────────
 function App() {
-  const [items,    setItems,    il] = useStorage('pm_items',    DEFAULT_ITEMS);
-  const [sessions, setSessions, sl] = useStorage('pm_sessions', []);
-  const [settings, setSettings, stl] = useStorage('pm_settings', DEFAULT_SETTINGS);
+  const [items,    setItems,    il, ilf]  = useStorage('pm_items',    DEFAULT_ITEMS);
+  const [sessions, setSessions, sl, slf]  = useStorage('pm_sessions', []);
+  const [settings, setSettings, stl, stlf] = useStorage('pm_settings', DEFAULT_SETTINGS);
+  const loadFailed = !!(ilf || slf || stlf);
   const [tab, setTab] = useState('today');
   const [saveStatus, setSaveStatus] = useState(null);
   const [saveError, setSaveError] = useState(false);
@@ -2350,7 +2776,68 @@ function App() {
     };
   }, []);
 
+  const downloadBlob = (blob, filename) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  };
+
+  // Export : .json (sans photo) ou .zip (données + photos)
+  const exportData = async (progress) => {
+    if (loadFailed) return { ok: false, msg: "Lecture de tes données impossible : export bloqué (il contiendrait des données d'exemple). Recharge l'appli." };
+    const r = await buildBackup({ items, sessions, settings }, progress);
+    downloadBlob(r.blob, r.filename);
+    try { localStorage.setItem('cadence_last_export', localISO(new Date())); } catch(_) {}
+    const warn = r.missing ? '\n⚠️ ' + r.missing + ' photo(s) introuvable(s) (hors connexion ?) : sauvegarde incomplète, réessaie avec du réseau.' : '';
+    return { ok: !r.missing, exported: true, msg: '✅ Fichier téléchargé (' + r.photos + ' photo' + (r.photos > 1 ? 's' : '') + ').' + warn };
+  };
+
+  // Import : remplace toutes les données par celles d'une sauvegarde (une copie de sécurité reste sur Drive)
+  const importData = async (file, progress) => {
+    if (loadFailed) return { ok: false, msg: "Lecture de tes données impossible : import bloqué. Recharge l'appli." };
+    const { data, zip, photoNames } = await parseBackup(file);
+    const when = data.exportedAt ? new Date(data.exportedAt).toLocaleDateString('fr-FR') : 'date inconnue';
+    const ok = window.confirm('Remplacer TOUTES tes données actuelles par la sauvegarde du ' + when + ' ?\n\n' +
+      data.items.length + ' éléments, ' + data.sessions.length + ' sessions, ' + photoNames.length + ' photo(s).\n\n' +
+      'Tes données actuelles seront écrasées (une copie de sécurité est gardée sur Drive).');
+    if (!ok) return { ok: false, msg: 'Import annulé.' };
+    progress('Copie de sécurité…');
+    await DriveDB.set('pm_backup_before_import.json', { savedAt: new Date().toISOString(), items, sessions, settings });
+    let uploaded = 0;
+    if (zip && photoNames.length) uploaded = await restorePhotos(zip, photoNames, progress);
+    progress('Enregistrement des données…');
+    const newSettings = { ...DEFAULT_SETTINGS, ...data.settings };
+    const newSessions = data.sessions.filter(s => s && s.date && !isNaN(new Date(s.date + 'T12:00:00').getTime()));
+    await DriveDB.set('pm_items.json', data.items);
+    await DriveDB.set('pm_sessions.json', newSessions);
+    await DriveDB.set('pm_settings.json', newSettings);
+    setItems(data.items); setSessions(newSessions); setSettings(newSettings);
+    return { ok: true, msg: '✅ Import terminé : ' + data.items.length + ' éléments, ' + newSessions.length + ' sessions, ' + photoNames.length + ' photo(s) (' + uploaded + ' envoyée(s) sur Drive).' };
+  };
+
+  // Nettoyage : supprime de Drive les photos qu'aucun exercice n'utilise (et créées il y a plus de 24 h)
+  const cleanupPhotos = async () => {
+    if (loadFailed) return { ok: false, msg: "Lecture de tes données impossible : nettoyage bloqué. Recharge l'appli." };
+    const used = new Set(collectPhotoIds(items));
+    try { // les photos de la copie de sécurité d'avant import restent protégées
+      const bk = await DriveDB.get('pm_backup_before_import.json');
+      if (bk && Array.isArray(bk.items)) collectPhotoIds(bk.items).forEach(id => used.add(id));
+    } catch (_) {}
+    const files = await DriveDB.listFiles(PHOTO_PREFIX);
+    const limit = Date.now() - 24 * 3600 * 1000;
+    const idOf = f => f.name.slice(PHOTO_PREFIX.length).replace(/\.jpg$/i, '');
+    const orphans = files.filter(f => !used.has(idOf(f)) && new Date(f.createdTime).getTime() < limit);
+    if (!orphans.length) return { ok: true, msg: 'Aucune photo inutilisée à supprimer.' };
+    const mb = (orphans.reduce((a, f) => a + Number(f.size || 0), 0) / 1048576).toFixed(1);
+    if (!window.confirm(orphans.length + ' photo(s) inutilisée(s) (' + mb + ' Mo) seront supprimées de Drive. Continuer ?')) return { ok: false, msg: 'Nettoyage annulé.' };
+    for (const f of orphans) { await DriveDB.deleteFile(f.name); ImgCache.del(idOf(f)); }
+    return { ok: true, msg: '✅ ' + orphans.length + ' photo(s) supprimée(s) (' + mb + ' Mo libérés).' };
+  };
+
   const forceSave = async () => {
+    if (loadFailed) { alert("Lecture de tes données Drive impossible : sauvegarde bloquée pour protéger tes fichiers. Recharge l'appli."); return; }
     setSaveStatus('saving');
     try {
       await Promise.all([
@@ -2423,6 +2910,20 @@ function App() {
         </div>
       </div>
 
+      {/* Load failed banner: Drive writes are blocked to protect real data */}
+      {loadFailed && (
+        <div style={{ background:'rgba(224,92,92,0.15)', borderBottom:'1px solid rgba(224,92,92,0.4)', padding:'10px 16px', display:'flex', alignItems:'center', gap:10 }}>
+          <span style={{fontSize:18}}>🛑</span>
+          <div style={{flex:1}}>
+            <div style={{fontSize:13, color:'#e05c5c', fontWeight:700}}>Lecture de tes données impossible</div>
+            <div style={{fontSize:11, color:'#888', marginTop:1}}>Ce que tu vois n'est pas ton vrai contenu. Rien n'est enregistré : tes fichiers Drive sont protégés. Recharge l'appli.</div>
+          </div>
+          <button onClick={() => window.location.reload()} style={{ padding:'6px 12px', background:'rgba(224,92,92,0.2)', border:'1px solid rgba(224,92,92,0.4)', borderRadius:8, color:'#e05c5c', fontSize:12, fontWeight:700, cursor:'pointer', whiteSpace:'nowrap' }}>
+            Recharger
+          </button>
+        </div>
+      )}
+
       {/* Save error banner */}
       {saveError && (
         <div style={{ background:'rgba(224,92,92,0.12)', borderBottom:'1px solid rgba(224,92,92,0.3)', padding:'10px 16px', display:'flex', alignItems:'center', gap:10 }}>
@@ -2454,9 +2955,9 @@ function App() {
       {/* Content */}
       <div style={{ flex:1, padding:'20px 16px 80px', overflowY:'auto' }}>
         {tab==='today'    && <TodayView    items={items} settings={settings} sessions={sessions} setSessions={setSessions} setItems={setItems} />}
-        {tab==='library'  && <LibraryView  items={items} setItems={setItems} />}
+        {tab==='library'  && <LibraryView  items={items} setItems={setItems} settings={settings} />}
         {tab==='calendar' && <CalendarView sessions={sessions} setSessions={setSessions} settings={settings} />}
-        {tab==='settings' && <SettingsView settings={settings} setSettings={setSettings} forceSave={forceSave} saveStatus={saveStatus} />}
+        {tab==='settings' && <SettingsView settings={settings} setSettings={setSettings} forceSave={forceSave} saveStatus={saveStatus} onExport={exportData} onImport={importData} onCleanup={cleanupPhotos} />}
       </div>
     </div>
   );
