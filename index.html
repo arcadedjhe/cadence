@@ -119,8 +119,29 @@ const DriveDB = {
 
   onTokenExpired: null, // callback to trigger re-auth
 
-  async set(name, data) {
+  // Écritures sérialisées par fichier : une seule requête à la fois, et si plusieurs
+  // sauvegardes s'enchaînent vite, seule la plus récente est envoyée (dernier état gagnant).
+  _chain: {}, _latest: {},
+  set(name, data) {
     this.cache[name] = data;
+    this._latest[name] = data;
+    if (!this._chain[name]) {
+      this._chain[name] = (async () => {
+        let lastErr = null;
+        try {
+          while (this._latest[name] !== undefined) {
+            const d = this._latest[name]; delete this._latest[name];
+            try { await this._write(name, d); lastErr = null; }
+            catch (e) { lastErr = e; if (this._latest[name] === undefined) break; }
+          }
+        } finally { delete this._chain[name]; }
+        if (lastErr) throw lastErr;
+      })();
+    }
+    return this._chain[name];
+  },
+
+  async _write(name, data) {
     const body = JSON.stringify(data);
     try {
       const id = await this.getFileId(name);
@@ -272,27 +293,30 @@ function useStorage(key, defaultVal) {
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
 function toDateStr(d) { return (d || new Date()).toISOString().slice(0, 10); }
 function getWeekKey(date, weekStartDay = 4) {
-  const d = new Date(date || new Date()); d.setHours(0,0,0,0);
-  const day = d.getDay();
-  let diff = day - weekStartDay;
+  // Date locale (pas UTC) : une chaîne 'YYYY-MM-DD' est lue à midi pour éviter tout décalage de jour
+  const d = typeof date === 'string' ? new Date(date.slice(0,10) + 'T12:00:00') : new Date(date || new Date());
+  d.setHours(12,0,0,0);
+  let diff = d.getDay() - weekStartDay;
   if (diff < 0) diff += 7;
   d.setDate(d.getDate() - diff);
-  return d.toISOString().slice(0, 10);
+  return localISO(d);
 }
+// Deux dates sont-elles dans la même semaine (selon le jour de début réglé) ? Ignore le weekKey enregistré.
+function sameWeek(dateA, dateB, weekStartDay = 4) { return getWeekKey(dateA, weekStartDay) === getWeekKey(dateB, weekStartDay); }
 
 function getWeekDays(weekStartDay = 4) {
   // Returns array of dateStr for the current week
   const start = new Date(getWeekKey(new Date(), weekStartDay) + 'T12:00:00');
   return Array.from({ length: 7 }, (_, i) => {
     const d = new Date(start); d.setDate(d.getDate() + i);
-    return d.toISOString().slice(0, 10);
+    return localISO(d);
   });
 }
 
 // Calculate catchup minutes for today based on missed days this week
 function calculateCatchup(sessions, settings, dateStr) {
   const weekStartDay = settings.weekStartDay ?? 4;
-  const weekKey = getWeekKey(new Date(dateStr), weekStartDay);
+  const weekKey = getWeekKey(dateStr, weekStartDay);
   const weekStart = new Date(weekKey + 'T12:00:00');
 
   const today = new Date(dateStr + 'T12:00:00');
@@ -302,14 +326,14 @@ function calculateCatchup(sessions, settings, dateStr) {
   const pastDays = [];
   for (let i = 0; i < 7; i++) {
     const d = new Date(weekStart); d.setDate(d.getDate() + i);
-    if (d < today) pastDays.push(d.toISOString().slice(0, 10));
+    if (d < today) pastDays.push(localISO(d));
   }
 
   // Count catchup minutes already done in validated sessions this week
   // Use date range instead of weekKey to avoid mismatch issues
   const weekStartStr = weekKey;
   const weekEndDate = new Date(weekStart); weekEndDate.setDate(weekEndDate.getDate() + 6);
-  const weekEndStr = weekEndDate.toISOString().slice(0, 10);
+  const weekEndStr = localISO(weekEndDate);
 
   const alreadyCaughtUpMin = sessions
     .filter(s => s.validated && s.catchupMin > 0 && s.date >= weekStartStr && s.date <= weekEndStr && s.date < dateStr)
@@ -805,7 +829,7 @@ function generateSession(items, settings, sessions, dateStr) {
   }
 
   const weekStartDay = settings.weekStartDay ?? 4;
-  return { blocks, totalMin, weekKey: getWeekKey(new Date(dateStr), weekStartDay), hasRevision: blocks.some(b => b.category === 'revision'), catchupMin: hasCatchup ? catchupMin : 0 };
+  return { blocks, totalMin, weekKey: getWeekKey(dateStr, weekStartDay), hasRevision: blocks.some(b => b.category === 'revision'), catchupMin: hasCatchup ? catchupMin : 0 };
 }
 
 // ─── IMAGE GALLERY ────────────────────────────────────────────────────────────
@@ -1400,7 +1424,7 @@ function TodayView({ items, settings, sessions, setSessions, setItems }) {
     }
   }, [session]);
   const thisWeek = getWeekKey(new Date(), settings?.weekStartDay ?? 4);
-  const jokerUsed = sessions.some(s => s.weekKey === thisWeek && s.joker && s.date !== TODAY);
+  const jokerUsed = sessions.some(s => s.joker && s.date !== TODAY && sameWeek(s.date, TODAY, settings?.weekStartDay ?? 4));
   const isJoker = !!(session?.joker || existing?.joker);
   const isOff = existing?.type === 'off';
   const isAlternatif = existing?.type === 'alternatif';
@@ -2053,7 +2077,7 @@ function StatsCharts({ sessions, settings }) {
 
   // Safe date helper — skip sessions with invalid dates
   const validSessions = sessions.filter(s => s.date && !isNaN(new Date(s.date+'T12:00:00').getTime()));
-  const safeWeekKey = s => { try { return getWeekKey(new Date(s.date+'T12:00:00'), weekStartDay); } catch(_) { return ''; } };
+  const safeWeekKey = s => { try { return getWeekKey(s.date, weekStartDay); } catch(_) { return ''; } };
   const isWorked = s => (s.type==='alternatif' && (s.timeSpent||0)>0) || s.validated || (s.blocks && s.blocks.some(b=>b.validated));
 
   // Current week stats
@@ -2177,7 +2201,7 @@ function CalendarView({ sessions, setSessions, settings }) {
   };
 
   const markOff = (dateStr) => {
-    setSessions(p => [...p.filter(s => s.date !== dateStr), { date: dateStr, type: 'off', weekKey: getWeekKey(new Date(dateStr)) }]);
+    setSessions(p => [...p.filter(s => s.date !== dateStr), { date: dateStr, type: 'off', weekKey: getWeekKey(dateStr, settings?.weekStartDay ?? 4) }]);
     setDayModal(null);
   };
 
@@ -2185,7 +2209,7 @@ function CalendarView({ sessions, setSessions, settings }) {
     const weekStartDay = settings?.weekStartDay ?? 4;
     setSessions(p => [
       ...p.filter(s => s.date !== dateStr),
-      { date: dateStr, type: 'alternatif', timeSpent: 0, note: '', weekKey: getWeekKey(new Date(dateStr), weekStartDay) }
+      { date: dateStr, type: 'alternatif', timeSpent: 0, note: '', weekKey: getWeekKey(dateStr, weekStartDay) }
     ]);
     setDayModal(null);
   };
@@ -2742,6 +2766,33 @@ function SettingsView({ settings, setSettings, forceSave, saveStatus, onExport, 
   );
 }
 
+// Répare les dates "Vu"/maîtrise des éléments à partir des blocs validés dans les séances
+function reconcileItems(items, sessions) {
+  const best = {}; // itemId -> {date, mastery, revDate}
+  (sessions || []).forEach(se => {
+    if (!se || !se.date || !Array.isArray(se.blocks)) return;
+    se.blocks.forEach(b => {
+      if (!b || !b.validated || b.itemId == null) return;
+      const cur = best[b.itemId] || (best[b.itemId] = { date: null, mastery: null, rev: null });
+      if (!cur.date || se.date >= cur.date) { cur.date = se.date; cur.mastery = b.validatedMastery || cur.mastery; }
+      if (b.category === 'revision' && (!cur.rev || se.date > cur.rev)) cur.rev = se.date;
+    });
+  });
+  let fixed = 0;
+  const next = (items || []).map(it => {
+    const b = best[it.id]; if (!b) return it;
+    let out = it;
+    if (b.date && (!it.lastWorked || it.lastWorked < b.date)) {
+      out = { ...out, lastWorked: b.date };
+      if (b.mastery) out.mastery = b.mastery;
+      fixed++;
+    }
+    if (b.rev && (!it.lastRevised || it.lastRevised < b.rev)) out = { ...out, lastRevised: b.rev };
+    return out;
+  });
+  return { items: next, fixed };
+}
+
 // ─── APP ──────────────────────────────────────────────────────────────────────
 function App() {
   const [items,    setItems,    il, ilf]  = useStorage('pm_items',    DEFAULT_ITEMS);
@@ -2753,6 +2804,14 @@ function App() {
   const [saveError, setSaveError] = useState(false);
 
   const [needReauth, setNeedReauth] = useState(false);
+  const [repairNote, setRepairNote] = useState(null);
+  const reconciledRef = useRef(false);
+  useEffect(() => {
+    if (reconciledRef.current || !il || !sl || loadFailed) return;
+    reconciledRef.current = true;
+    const r = reconcileItems(items, sessions);
+    if (r.fixed > 0) { setItems(r.items); setRepairNote(r.fixed); }
+  }, [il, sl, loadFailed]);
 
   useEffect(() => {
     DriveDB.onSaveSuccess = () => {
@@ -2873,8 +2932,8 @@ function App() {
   );
 
   const TABS = [{id:'today',label:"Aujourd'hui",icon:'🎯'},{id:'library',label:'Bibliothèque',icon:'📚'},{id:'calendar',label:'Calendrier',icon:'📅'},{id:'settings',label:'Réglages',icon:'⚙️'}];
-  const weekSessions = sessions.filter(s=>s.validated&&s.weekKey===getWeekKey(new Date(), settings.weekStartDay??4)).length;
-  const weekJoker = sessions.some(s=>s.joker&&s.weekKey===getWeekKey(new Date(), settings.weekStartDay??4));
+  const weekSessions = sessions.filter(s=>s.validated&&s.date&&sameWeek(s.date, localISO(new Date()), settings.weekStartDay??4)).length;
+  const weekJoker = sessions.some(s=>s.joker&&s.date&&sameWeek(s.date, localISO(new Date()), settings.weekStartDay??4));
 
   return (
     <div style={{ minHeight:'100vh', minHeight:'100dvh', background:'#1a1a18', display:'flex', flexDirection:'column' }}>
@@ -2909,6 +2968,13 @@ function App() {
           ))}
         </div>
       </div>
+
+      {repairNote && (
+        <div style={{ background:'rgba(100,180,120,0.15)', borderBottom:'1px solid rgba(100,180,120,0.4)', padding:'8px 16px', display:'flex', alignItems:'center', gap:10, fontSize:12, color:'#8ccf9c' }}>
+          <span style={{flex:1}}>🔧 {repairNote} date(s) « Vu » corrigée(s) d'après tes séances validées.</span>
+          <button onClick={() => setRepairNote(null)} style={{ background:'none', border:'none', color:'#8ccf9c', fontSize:16, cursor:'pointer' }}>×</button>
+        </div>
+      )}
 
       {/* Load failed banner: Drive writes are blocked to protect real data */}
       {loadFailed && (
