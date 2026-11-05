@@ -2523,14 +2523,14 @@ function NumberStepper({ label, value, onChange, min, max, step = 1, unit = 'min
       </div>
       <div style={{ display:'flex', alignItems:'center', gap:6 }}>
         {btn(-1, value <= min)}
-        <div style={{ display:'flex', alignItems:'baseline', justifyContent:'center', width:76, height:44, boxSizing:'border-box', borderRadius:12, background:'rgba(0,0,0,0.25)', border:'1px solid ' + (focus ? '#c9a84c' : 'rgba(255,255,255,0.1)'), padding:'0 6px' }}>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'center', gap:4, width:84, height:44, boxSizing:'border-box', borderRadius:12, background:'rgba(0,0,0,0.25)', border:'1px solid ' + (focus ? '#c9a84c' : 'rgba(255,255,255,0.1)'), padding:'0 6px' }}>
           <input type="text" inputMode="numeric" pattern="[0-9]*" value={text}
             onFocus={e => { setFocus(true); e.target.select(); }}
             onBlur={() => { setFocus(false); commit(); }}
             onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); }}
             onChange={e => setText(e.target.value.replace(/[^0-9]/g, '').slice(0, 3))}
-            style={{ width:36, background:'transparent', border:'none', outline:'none', color:'#c9a84c', fontFamily:'monospace', fontWeight:700, fontSize:16, textAlign:'right', padding:0 }} />
-          <span style={{ fontSize:11, color:'#777', marginLeft:3, alignSelf:'center' }}>{unit === 'jours' ? 'j' : unit.startsWith('min') ? 'min' : unit}</span>
+            style={{ width: Math.max(1, text.length) + 'ch', height:20, margin:0, background:'transparent', border:'none', outline:'none', color:'#c9a84c', fontFamily:'monospace', fontWeight:700, fontSize:16, lineHeight:'20px', textAlign:'center', padding:0, boxSizing:'content-box' }} />
+          <span style={{ fontSize:11, lineHeight:'20px', height:20, color:'#777', display:'flex', alignItems:'center' }}>{unit === 'jours' ? 'j' : unit.startsWith('min') ? 'min' : unit}</span>
         </div>
         {btn(1, value >= max)}
       </div>
