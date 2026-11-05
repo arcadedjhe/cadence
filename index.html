@@ -2562,7 +2562,7 @@ function SettingsView({ settings, setSettings, forceSave, saveStatus, onExport, 
           <div key={key} style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:12 }}>
             <span style={{ fontSize:13, color:'#f0e6d0' }}>{label}</span>
             <div style={{ display:'flex', gap:6 }}>
-              {[1,2,3].map(n => (
+              {(key==='nbMorceaux'?[1,2,3,4,5]:[1,2,3]).map(n => (
                 <button key={n} type="button" onClick={() => set(key, n)} style={{ width:36, height:36, borderRadius:10, border:'1px solid', fontSize:14, fontWeight:700, cursor:'pointer',
                   background: form[key]===n ? color+'25' : 'rgba(255,255,255,0.04)',
                   borderColor: form[key]===n ? color : 'rgba(255,255,255,0.1)',
