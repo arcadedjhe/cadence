@@ -2491,6 +2491,53 @@ function CalendarView({ sessions, setSessions, settings }) {
 }
 
 // ─── SETTINGS VIEW ────────────────────────────────────────────────────────────
+// Champ numérique avec boutons − / + et saisie directe (remplace les curseurs, trop sensibles au scroll)
+function NumberStepper({ label, value, onChange, min, max, step = 1, unit = 'min', color = '#f0e6d0', hint }) {
+  const [text, setText] = useState(String(value));
+  const [focus, setFocus] = useState(false);
+  useEffect(() => { if (!focus) setText(String(value)); }, [value, focus]);
+  const clamp = n => Math.min(max, Math.max(min, n));
+  const commit = () => {
+    const n = parseInt(text, 10);
+    const v = isNaN(n) ? value : clamp(n);
+    setText(String(v)); if (v !== value) onChange(v);
+  };
+  const bump = dir => {
+    // on aligne sur le pas : 62 + → 65, 62 − → 60
+    const r = dir > 0 ? Math.floor(value / step) * step + step : Math.ceil(value / step) * step - step;
+    onChange(clamp(r));
+  };
+  const btn = (dir, disabled) => (
+    <button type="button" disabled={disabled} onClick={() => bump(dir)} aria-label={dir > 0 ? 'Augmenter' : 'Diminuer'}
+      style={{ width:44, height:44, borderRadius:12, border:'1px solid rgba(201,168,76,0.35)', background: disabled ? 'rgba(255,255,255,0.03)' : 'rgba(201,168,76,0.12)',
+        color: disabled ? '#444' : '#c9a84c', fontSize:22, fontWeight:600, lineHeight:1, cursor: disabled ? 'default' : 'pointer', flexShrink:0, touchAction:'manipulation' }}>
+      {dir > 0 ? '+' : '−'}
+    </button>
+  );
+  return (
+    <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:12, marginBottom:14, padding:'10px 12px', background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.07)', borderRadius:14 }}>
+      <div style={{ flex:1, minWidth:0 }}>
+        <div style={{ fontSize:13, color, lineHeight:1.3 }}>{label}</div>
+        {hint && <div style={{ fontSize:10, color:'#555', marginTop:2 }}>{hint}</div>}
+        <div style={{ fontSize:10, color:'#555', marginTop:2 }}>{min}–{max} {unit}</div>
+      </div>
+      <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+        {btn(-1, value <= min)}
+        <div style={{ display:'flex', alignItems:'baseline', justifyContent:'center', width:76, height:44, boxSizing:'border-box', borderRadius:12, background:'rgba(0,0,0,0.25)', border:'1px solid ' + (focus ? '#c9a84c' : 'rgba(255,255,255,0.1)'), padding:'0 6px' }}>
+          <input type="text" inputMode="numeric" pattern="[0-9]*" value={text}
+            onFocus={e => { setFocus(true); e.target.select(); }}
+            onBlur={() => { setFocus(false); commit(); }}
+            onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); }}
+            onChange={e => setText(e.target.value.replace(/[^0-9]/g, '').slice(0, 3))}
+            style={{ width:36, background:'transparent', border:'none', outline:'none', color:'#c9a84c', fontFamily:'monospace', fontWeight:700, fontSize:16, textAlign:'right', padding:0 }} />
+          <span style={{ fontSize:11, color:'#777', marginLeft:3, alignSelf:'center' }}>{unit === 'jours' ? 'j' : unit.startsWith('min') ? 'min' : unit}</span>
+        </div>
+        {btn(1, value >= max)}
+      </div>
+    </div>
+  );
+}
+
 function SettingsView({ settings, setSettings, forceSave, saveStatus, onExport, onImport, onCleanup }) {
   const [lastExport, setLastExport] = useState(() => { try { return localStorage.getItem('cadence_last_export'); } catch(_) { return null; } });
   const [busy, setBusy] = useState(false);
@@ -2542,13 +2589,7 @@ function SettingsView({ settings, setSettings, forceSave, saveStatus, onExport, 
           {key:'morceauxWeeklyMin',label:'🎵 Morceaux (min/semaine)',max:180},
           {key:'revisionsWeeklyMin',label:'🔁 Révisions (min/semaine)',max:60},
         ].map(({key,label,max,step}) => (
-          <div key={key} style={{ marginBottom:16 }}>
-            <div style={{ display:'flex', justifyContent:'space-between', marginBottom:6 }}>
-              <label style={{ fontSize:13, color:'#f0e6d0' }}>{label}</label>
-              <span style={{ fontSize:13, color:'#c9a84c', fontFamily:'monospace', fontWeight:700 }}>{form[key]} min</span>
-            </div>
-            <input type="range" min={key==='gammesDailyMin'?1:5} max={max} step={step||5} value={form[key]} onChange={e=>set(key,parseInt(e.target.value))} style={{ width:'100%' }} />
-          </div>
+          <NumberStepper key={key} label={label.replace(/ \(min.*\)/,'')} unit={key==='gammesDailyMin'?'min/jour':'min/sem.'} value={form[key]} onChange={v=>set(key,v)} min={key==='gammesDailyMin'?1:5} max={max} step={step||5} />
         ))}
       </div>
 
@@ -2644,30 +2685,13 @@ function SettingsView({ settings, setSettings, forceSave, saveStatus, onExport, 
 
       <div style={{ marginBottom:24 }}>
         <div style={{ fontSize:12, color:'#888', letterSpacing:2, textTransform:'uppercase', marginBottom:14 }}>Travail alternatif</div>
-        <div style={{ marginBottom:16 }}>
-          <div style={{ display:'flex', justifyContent:'space-between', marginBottom:6 }}>
-            <label style={{ fontSize:13, color:'#f0e6d0' }}>🎒 Budget par jour (min)</label>
-            <span style={{ fontSize:13, color:'#c9a84c', fontFamily:'monospace', fontWeight:700 }}>{form.alternatifDailyMin} min</span>
-          </div>
-          <input type="range" min="5" max="30" step="5" value={form.alternatifDailyMin} onChange={e=>set('alternatifDailyMin',parseInt(e.target.value))} style={{ width:'100%' }} />
-          <div style={{ fontSize:11, color:'#555', marginTop:4 }}>Budget total = ce temps × nombre de jours de la période</div>
-        </div>
+        <NumberStepper label="🎒 Budget par jour" value={form.alternatifDailyMin} onChange={v=>set('alternatifDailyMin',v)} min={5} max={30} step={5} unit="min" hint="Budget total = ce temps × nombre de jours de la période" />
       </div>
 
       <div style={{ marginBottom:24 }}>
         <div style={{ fontSize:12, color:'#888', letterSpacing:2, textTransform:'uppercase', marginBottom:14 }}>Garde-fous</div>
 
-        <div style={{ marginBottom:16 }}>
-          <div style={{ display:'flex', justifyContent:'space-between', marginBottom:6 }}>
-            <label style={{ fontSize:13, color:'#f0e6d0' }}>⏱ Cap session max</label>
-            <span style={{ fontSize:13, color:'#c9a84c', fontFamily:'monospace', fontWeight:700 }}>{form.sessionCapMin} min</span>
-          </div>
-          <input type="range" min="30" max="60" step="5" value={form.sessionCapMin} onChange={e=>set('sessionCapMin',parseInt(e.target.value))} style={{ width:'100%' }} />
-          <div style={{ display:'flex', justifyContent:'space-between', marginTop:3 }}>
-            <span style={{ fontSize:10, color:'#555' }}>30 min</span>
-            <span style={{ fontSize:10, color:'#555' }}>60 min</span>
-          </div>
-        </div>
+        <NumberStepper label="⏱ Cap session max" value={form.sessionCapMin} onChange={v=>set('sessionCapMin',v)} min={30} max={90} step={5} unit="min" />
 
         <div style={{ fontSize:13, color:'#f0e6d0', marginBottom:10 }}>Relance auto si non vu depuis : <span style={{ fontSize:11, color:'#666' }}>(délai doublé si bien maîtrisé)</span></div>
         {[
@@ -2676,13 +2700,7 @@ function SettingsView({ settings, setSettings, forceSave, saveStatus, onExport, 
           {key:'maxDaysUnseenOccasional', label:'🌙 Occasionnel', color:'#7b9cdf', min:14, max:90 },
           {key:'revisionMaxDays',         label:'🔁 Révision (non révisé depuis)', color:'#5cba7d', min:7, max:90 },
         ].map(({key,label,color,min,max}) => (
-          <div key={key} style={{ marginBottom:14 }}>
-            <div style={{ display:'flex', justifyContent:'space-between', marginBottom:6 }}>
-              <label style={{ fontSize:13, color }}>{label}</label>
-              <span style={{ fontSize:13, color:'#c9a84c', fontFamily:'monospace', fontWeight:700 }}>{form[key]} jours</span>
-            </div>
-            <input type="range" min={min} max={max} step="1" value={form[key]} onChange={e=>set(key,parseInt(e.target.value))} style={{ width:'100%' }} />
-          </div>
+          <NumberStepper key={key} label={label} color={color} unit="jours" value={form[key]} onChange={v=>set(key,v)} min={min} max={max} step={1} />
         ))}
       </div>
 
