@@ -617,9 +617,12 @@ function pickItem(items, dateStr, maxDaysUnseen) {
     if (late.length) return rand(late).item;
   }
 
-  // 2) Sinon : tirage pondéré fréquence × maîtrise × récence
+  // 2) Sinon : tirage pondéré fréquence × maîtrise × récence³.
+  //    La récence est au cube (jours depuis la dernière fois, plafonnés à 10) : un élément travaillé
+  //    plus récemment ne passe quasiment jamais devant un élément laissé de côté plus longtemps,
+  //    la priorité et la maîtrise départageant surtout les éléments d'ancienneté comparable.
   const weights = info.map(x =>
-    FREQUENCY_WEIGHT[x.freq] * ((MASTERY[x.item.mastery] || MASTERY.fragile).weight) * Math.min(x.daysSince + 1, 10));
+    FREQUENCY_WEIGHT[x.freq] * ((MASTERY[x.item.mastery] || MASTERY.fragile).weight) * Math.pow(Math.min(Math.max(x.daysSince, 0.5), 10), 3));
   const total = weights.reduce((a, b) => a + b, 0);
   let r = Math.random() * total;
   for (let i = 0; i < items.length; i++) { r -= weights[i]; if (r <= 0) return items[i]; }
