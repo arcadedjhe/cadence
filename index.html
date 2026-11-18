@@ -1854,6 +1854,37 @@ function LibraryView({ items, setItems, settings }) {
   const [expandedFamilies, setExpandedFamilies] = useState({});
   const toggleFamily = id => setExpandedFamilies(p => ({ ...p, [id]: !p[id] }));
 
+  // Tri de la bibliothèque (mémorisé sur cet appareil). Les éléments en pause passent toujours en fin de liste.
+  const SORT_OPTIONS = [
+    { key: 'newest', label: 'Ajoutés récemment' },
+    { key: 'oldest', label: 'Ajoutés il y a longtemps' },
+    { key: 'az', label: 'A → Z' },
+    { key: 'za', label: 'Z → A' },
+    { key: 'seen', label: 'Travaillés il y a le plus longtemps' },
+  ];
+  const [sortMode, setSortMode] = useState(() => {
+    try { const v = localStorage.getItem('cadence_lib_sort'); return SORT_OPTIONS.some(o => o.key === v) ? v : 'newest'; } catch (e) { return 'newest'; }
+  });
+  const changeSort = v => { setSortMode(v); try { localStorage.setItem('cadence_lib_sort', v); } catch (e) {} };
+  // Date d'entrée = l'identifiant (créé avec l'heure de l'ajout) ; sans date lisible → considéré comme le plus ancien
+  const addedAt = i => { const n = Number(i.id); return isFinite(n) ? n : 0; };
+  const byTitle = (a, b) => (a.title || '').localeCompare(b.title || '', 'fr', { sensitivity: 'base' });
+  const sortList = list => [...list].sort((a, b) => {
+    const pa = a.paused ? 1 : 0, pb = b.paused ? 1 : 0;
+    if (pa !== pb) return pa - pb;
+    let r = 0;
+    if (sortMode === 'newest') r = addedAt(b) - addedAt(a);
+    else if (sortMode === 'oldest') r = addedAt(a) - addedAt(b);
+    else if (sortMode === 'az') r = byTitle(a, b);
+    else if (sortMode === 'za') r = byTitle(b, a);
+    else if (sortMode === 'seen') {
+      // jamais travaillé d'abord, puis du plus ancien au plus récent
+      const la = a.lastWorked || '', lb = b.lastWorked || '';
+      r = la < lb ? -1 : la > lb ? 1 : 0;
+    }
+    return r || byTitle(a, b);
+  });
+
   const match = i => filter==='all'||( filter==='active'&&i.isActive)||(filter==='priority'&&i.frequency==='priority')||(filter==='occasional'&&i.frequency==='occasional')||(filter==='paused'&&i.paused);
 
   const addItem = (form, parentId = null) => {
@@ -1888,6 +1919,15 @@ function LibraryView({ items, setItems, settings }) {
         </div>
       </div>
 
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+        <label htmlFor="lib-sort" style={{ fontSize: 12, color: '#888' }}>Trier par</label>
+        <select id="lib-sort" value={sortMode} onChange={e => changeSort(e.target.value)}
+          style={{ flex: 1, maxWidth: 280, padding: '7px 10px', background: '#2a2a28', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 20, color: '#c9a84c', fontSize: 12, fontWeight: 600, cursor: 'pointer', outline: 'none' }}>
+          {SORT_OPTIONS.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
+        </select>
+        <span style={{ fontSize: 11, color: '#555' }}>⏸ en fin de liste</span>
+      </div>
+
       {/* Add item form */}
       {adding && (
         <ItemForm
@@ -1920,8 +1960,8 @@ function LibraryView({ items, setItems, settings }) {
             </div>
             {/* Separate families and standalone items */}
             {(() => {
-              const families = catItems.filter(i => i.isGroup);
-              const standalone = catItems.filter(i => !i.isGroup && !i.parentId);
+              const families = sortList(catItems.filter(i => i.isGroup));
+              const standalone = sortList(catItems.filter(i => !i.isGroup && !i.parentId));
               const renderItem = (item, isVariant = false) => (
                 <div key={item.id}>
                   {editing?.id===item.id
@@ -2067,7 +2107,7 @@ function LibraryView({ items, setItems, settings }) {
                       {/* Variants */}
                       {expandedFamilies[family.id] && (
                         <div style={{ marginLeft: 20 }}>
-                          {catItems.filter(i => i.parentId === family.id).map(variant => renderItem(variant, true))}
+                          {sortList(catItems.filter(i => i.parentId === family.id)).map(variant => renderItem(variant, true))}
                         </div>
                       )}
                     </div>
