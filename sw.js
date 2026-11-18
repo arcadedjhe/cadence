@@ -1,4 +1,4 @@
-const CACHE_NAME = 'cadence-v3';
+const CACHE_NAME = 'cadence-v4';
 const BASE = '/cadence/';
 const INDEX = BASE + 'index.html';
 
@@ -6,7 +6,9 @@ const INDEX = BASE + 'index.html';
 self.addEventListener('install', (e) => {
   e.waitUntil(
     caches.open(CACHE_NAME)
-      .then(cache => cache.addAll([INDEX, BASE + 'manifest.json']))
+      .then(cache => cache.addAll([INDEX, BASE + 'manifest.json'])
+        // Fichiers du métronome : mis en cache s'ils existent (leur absence ne doit pas bloquer l'installation)
+        .then(() => Promise.all([BASE + 'metronome.jsx', BASE + 'metronome.css'].map(u => cache.add(u).catch(() => {})))))
       .then(() => self.skipWaiting())
   );
 });
@@ -26,6 +28,19 @@ self.addEventListener('fetch', (e) => {
   if (url.includes('googleapis.com') || url.includes('accounts.google.com') || url.includes('unpkg.com') || url.includes('fonts.g')) return;
   if (e.request.mode === 'navigate') {
     e.respondWith(fetch(INDEX).catch(() => caches.match(INDEX)));
+    return;
+  }
+  // Fichiers du métronome : réseau d'abord (une mise à jour sur GitHub est vue tout de suite), cache en secours hors connexion
+  if (/\/metronome\.(jsx|css)(\?|$)/.test(url)) {
+    e.respondWith(
+      fetch(e.request).then(response => {
+        if (response && response.status === 200) {
+          const clone = response.clone();
+          caches.open(CACHE_NAME).then(cache => cache.put(e.request, clone));
+        }
+        return response;
+      }).catch(() => caches.match(e.request))
+    );
     return;
   }
   e.respondWith(

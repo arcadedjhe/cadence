@@ -15,6 +15,7 @@
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/@babel/standalone@7.23.10/babel.min.js"></script>
   <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <link rel="stylesheet" href="metronome.css">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
     html, body { height: 100%; overflow-x: hidden; }
@@ -290,6 +291,23 @@ function useStorage(key, defaultVal) {
   return [val, save, loaded, loadFailed];
 }
 
+// ─── MÉTRONOME (module séparé : metronome.jsx, chargé à la première ouverture) ─
+let _metroPromise = null;
+function loadMetronome() {
+  if (window.CadenceMetronome) return Promise.resolve(window.CadenceMetronome);
+  if (_metroPromise) return _metroPromise;
+  _metroPromise = fetch('metronome.jsx', { cache: 'no-cache' })
+    .then(r => { if (!r.ok) throw new Error('metronome.jsx introuvable (code ' + r.status + ')'); return r.text(); })
+    .then(src => {
+      const out = window.Babel.transform(src, { presets: ['react'] }).code;
+      (0, eval)(out);
+      if (!window.CadenceMetronome) throw new Error('module métronome invalide');
+      return window.CadenceMetronome;
+    })
+    .catch(e => { _metroPromise = null; throw e; });
+  return _metroPromise;
+}
+
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
 function toDateStr(d) { return (d || new Date()).toISOString().slice(0, 10); }
 function getWeekKey(date, weekStartDay = 4) {
@@ -530,7 +548,7 @@ function loadJSZip() {
 }
 
 async function buildBackup(data, onProgress) {
-  const payload = { app: 'cadence', version: 2, exportedAt: new Date().toISOString(), items: data.items, sessions: data.sessions, settings: data.settings };
+  const payload = { app: 'cadence', version: 2, exportedAt: new Date().toISOString(), items: data.items, sessions: data.sessions, settings: data.settings, metro: data.metro || {} };
   const ids = collectPhotoIds(data.items);
   const day = localISO(new Date());
   if (!ids.length) {
@@ -1041,7 +1059,7 @@ function useTimer(plannedMin, label, soundEnabled) {
 }
 
 // ─── BLOCK CARD ───────────────────────────────────────────────────────────────
-function BlockCard({ block, items, onValidate, soundEnabled }) {
+function BlockCard({ block, items, onValidate, soundEnabled, metroTempo, onMetro }) {
   const cat = CATEGORIES[block.category] || CATEGORIES.gammes;
   const item = items.find(i => i.id === block.itemId);
   const [open, setOpen] = useState(false);
@@ -1073,6 +1091,12 @@ function BlockCard({ block, items, onValidate, soundEnabled }) {
             {block.isCatchup && <span style={{ color: '#7b9cdf', fontWeight: 600, fontSize: 10, marginLeft: 8, letterSpacing: 0.5, textTransform: 'none' }}>🔄 rattrapage</span>}
           </div>
           <div style={{ fontSize: 14, color: done ? '#7abf96' : '#f0e6d0' }}>{block.title}</div>
+          {onMetro && block.itemId != null && (
+            <button onClick={(e) => { e.stopPropagation(); onMetro(block); }}
+              style={{ marginTop: 6, display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 10px', borderRadius: 8, border: '1px solid rgba(201,168,76,0.3)', background: 'rgba(201,168,76,0.08)', color: '#c9a84c', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+              🎚 Métronome{metroTempo ? <span style={{ fontFamily: 'monospace' }}>&nbsp;· {metroTempo} bpm</span> : null}
+            </button>
+          )}
           {done && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 2 }}>
               {block.validatedMastery && <span style={{ fontSize: 11, color: (MASTERY[block.validatedMastery]||MASTERY.fragile).color }}>{(MASTERY[block.validatedMastery]||MASTERY.fragile).label} · {block.actualMin} min</span>}
@@ -1414,7 +1438,45 @@ function ExtraExercisePanel({ items, onAdd, onClose }) {
 }
 
 // ─── TODAY VIEW ───────────────────────────────────────────────────────────────
-function TodayView({ items, settings, sessions, setSessions, setItems }) {
+function TodayView({ items, settings, sessions, setSessions, setItems, metro, setMetro }) {
+  // Métronome : ouvert depuis un bloc, se charge sur le dernier niveau validé de l'exercice
+  const [metroBlock, setMetroBlock] = useState(null);
+  const [MetroComp, setMetroComp] = useState(null);
+  const [metroLoading, setMetroLoading] = useState(false);
+  const openMetro = async (block) => {
+    if (metroLoading) return;
+    setMetroLoading(true);
+    try {
+      const C = await loadMetronome();
+      setMetroComp(() => C);
+      setMetroBlock(block);
+    } catch (e) {
+      alert("Métronome indisponible : " + e.message + "\nVérifie que metronome.jsx est bien déployé à côté de index.html.");
+    }
+    setMetroLoading(false);
+  };
+  const saveMetroLevel = (itemId, snap) => {
+    setMetro(prev => {
+      const cur = (prev && prev[itemId]) || {};
+      const hist = Array.isArray(cur.history) ? cur.history : [];
+      const entry = { d: TODAY, bpm: snap.tempo, sig: snap.num + '/' + snap.den, sub: snap.sub };
+      const lastE = hist[hist.length - 1];
+      const same = lastE && lastE.d === entry.d && lastE.bpm === entry.bpm && lastE.sig === entry.sig && lastE.sub === entry.sub;
+      return { ...(prev || {}), [itemId]: { cfg: snap, history: same ? hist : [...hist, entry] } };
+    });
+  };
+  // Le bouton « retour » d'Android ferme le métronome au lieu de quitter l'appli
+  useEffect(() => {
+    if (!metroBlock) return;
+    history.pushState({ cadenceMetro: true }, '');
+    const onPop = () => setMetroBlock(null);
+    window.addEventListener('popstate', onPop);
+    return () => {
+      window.removeEventListener('popstate', onPop);
+      if (history.state && history.state.cadenceMetro) history.back();
+    };
+  }, [metroBlock]);
+
   const existing = sessions.find(s => s.date === TODAY);
   const [session, setSession] = useState(existing || null);
   const [generated, setGenerated] = useState(!!existing);
@@ -1569,8 +1631,18 @@ function TodayView({ items, settings, sessions, setSessions, setItems }) {
       )}
 
       {!isJoker && session?.blocks?.map((block, i) => (
-        <BlockCard key={i} block={block} items={items} onValidate={handleBlockValidate} soundEnabled={settings?.timerSoundEnabled !== false} />
+        <BlockCard key={i} block={block} items={items} onValidate={handleBlockValidate} soundEnabled={settings?.timerSoundEnabled !== false}
+          metroTempo={metro && metro[block.itemId] && metro[block.itemId].cfg ? metro[block.itemId].cfg.tempo : null} onMetro={openMetro} />
       ))}
+
+      {metroBlock && MetroComp && ReactDOM.createPortal(
+        <MetroComp key={metroBlock.itemId} title={metroBlock.title}
+          initial={metro && metro[metroBlock.itemId] ? metro[metroBlock.itemId].cfg : null}
+          history={metro && metro[metroBlock.itemId] ? metro[metroBlock.itemId].history : []}
+          onValidate={(snap) => saveMetroLevel(metroBlock.itemId, snap)}
+          onClose={() => setMetroBlock(null)} autoStart={true} />,
+        document.body
+      )}
 
       {!isJoker && session && !allDone && (
         <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid rgba(255,255,255,0.06)' }}>
@@ -2819,7 +2891,8 @@ function App() {
   const [items,    setItems,    il, ilf]  = useStorage('pm_items',    DEFAULT_ITEMS);
   const [sessions, setSessions, sl, slf]  = useStorage('pm_sessions', []);
   const [settings, setSettings, stl, stlf] = useStorage('pm_settings', DEFAULT_SETTINGS);
-  const loadFailed = !!(ilf || slf || stlf);
+  const [metro, setMetro, ml, mlf] = useStorage('pm_metro', {});
+  const loadFailed = !!(ilf || slf || stlf || mlf);
   const [tab, setTab] = useState('today');
   const [saveStatus, setSaveStatus] = useState(null);
   const [saveError, setSaveError] = useState(false);
@@ -2867,7 +2940,7 @@ function App() {
   // Export : .json (sans photo) ou .zip (données + photos)
   const exportData = async (progress) => {
     if (loadFailed) return { ok: false, msg: "Lecture de tes données impossible : export bloqué (il contiendrait des données d'exemple). Recharge l'appli." };
-    const r = await buildBackup({ items, sessions, settings }, progress);
+    const r = await buildBackup({ items, sessions, settings, metro }, progress);
     downloadBlob(r.blob, r.filename);
     try { localStorage.setItem('cadence_last_export', localISO(new Date())); } catch(_) {}
     const warn = r.missing ? '\n⚠️ ' + r.missing + ' photo(s) introuvable(s) (hors connexion ?) : sauvegarde incomplète, réessaie avec du réseau.' : '';
@@ -2884,7 +2957,7 @@ function App() {
       'Tes données actuelles seront écrasées (une copie de sécurité est gardée sur Drive).');
     if (!ok) return { ok: false, msg: 'Import annulé.' };
     progress('Copie de sécurité…');
-    await DriveDB.set('pm_backup_before_import.json', { savedAt: new Date().toISOString(), items, sessions, settings });
+    await DriveDB.set('pm_backup_before_import.json', { savedAt: new Date().toISOString(), items, sessions, settings, metro });
     let uploaded = 0;
     if (zip && photoNames.length) uploaded = await restorePhotos(zip, photoNames, progress);
     progress('Enregistrement des données…');
@@ -2893,6 +2966,9 @@ function App() {
     await DriveDB.set('pm_items.json', data.items);
     await DriveDB.set('pm_sessions.json', newSessions);
     await DriveDB.set('pm_settings.json', newSettings);
+    // Niveaux du métronome : remplacés seulement si la sauvegarde en contient (anciennes sauvegardes : on garde les actuels)
+    const newMetro = data.metro && typeof data.metro === 'object' && !Array.isArray(data.metro) ? data.metro : null;
+    if (newMetro) { await DriveDB.set('pm_metro.json', newMetro); setMetro(newMetro); }
     setItems(data.items); setSessions(newSessions); setSettings(newSettings);
     return { ok: true, msg: '✅ Import terminé : ' + data.items.length + ' éléments, ' + newSessions.length + ' sessions, ' + photoNames.length + ' photo(s) (' + uploaded + ' envoyée(s) sur Drive).' };
   };
@@ -2924,6 +3000,7 @@ function App() {
         DriveDB.set('pm_items.json', items),
         DriveDB.set('pm_sessions.json', sessions),
         DriveDB.set('pm_settings.json', settings),
+        DriveDB.set('pm_metro.json', metro),
       ]);
       setSaveStatus('saved');
       setSaveError(false);
@@ -3041,7 +3118,7 @@ function App() {
 
       {/* Content */}
       <div style={{ flex:1, padding:'20px 16px 80px', overflowY:'auto' }}>
-        {tab==='today'    && <TodayView    items={items} settings={settings} sessions={sessions} setSessions={setSessions} setItems={setItems} />}
+        {tab==='today'    && <TodayView    items={items} settings={settings} sessions={sessions} setSessions={setSessions} setItems={setItems} metro={metro} setMetro={setMetro} />}
         {tab==='library'  && <LibraryView  items={items} setItems={setItems} settings={settings} />}
         {tab==='calendar' && <CalendarView sessions={sessions} setSessions={setSessions} settings={settings} />}
         {tab==='settings' && <SettingsView settings={settings} setSettings={setSettings} forceSave={forceSave} saveStatus={saveStatus} onExport={exportData} onImport={importData} onCleanup={cleanupPhotos} />}
