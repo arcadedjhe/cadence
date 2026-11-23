@@ -110,28 +110,38 @@ function defaultPositions(num, den, sub, bars) {
   return out;
 }
 
+// Piste B : vide par défaut, son « woodblock »
+function emptyTrack(num, den, sub, bars, sound) {
+  const total = totalFor(num, den, sub);
+  const out = [];
+  for (let i = 0; i < total * bars; i++) out.push({ frequency: 'never', sound });
+  return out;
+}
+
 // ─── Instantané d'un niveau (ce que Cadence enregistre) ──────────────────────
 const FREQ_CODE = { every: 'e', every_2: '2', every_4: '4', never: 'n' };
 const CODE_FREQ = { e: 'every', '2': 'every_2', '4': 'every_4', n: 'never' };
 
 function makeSnapshot(s) {
   return {
-    v: 2,
+    v: 3,
     tempo: s.tempo,
     num: s.num,
     den: s.den,
     sub: s.sub,
     bars: s.bars,
+    seq: !!s.seq,
     beacon: s.beacon,
     bell: s.bell,
     vol: { ...s.volumes },
-    pos: s.positions.map(p => [FREQ_CODE[p.frequency] || 'n', p.sound])
+    pos: s.positions.map(p => [FREQ_CODE[p.frequency] || 'n', p.sound]),
+    posB: (s.positionsB || []).map(p => [FREQ_CODE[p.frequency] || 'n', p.sound])
   };
 }
 
 // Lit un niveau enregistré en le validant (valeurs hors limites ou absentes → défauts)
 function readSnapshot(snap) {
-  const d = { tempo: 120, num: 4, den: 4, sub: 'eighth', bars: 1, beacon: 'none', bell: 'harmonic', volumes: { ...DEFAULT_VOLUMES }, positions: null };
+  const d = { tempo: 120, num: 4, den: 4, sub: 'eighth', bars: 1, seq: false, beacon: 'none', bell: 'harmonic', volumes: { ...DEFAULT_VOLUMES }, positions: null, positionsB: null };
   if (!snap || typeof snap !== 'object') return d;
   const tempo = parseInt(snap.tempo, 10);
   if (tempo >= TEMPO_MIN && tempo <= TEMPO_MAX) d.tempo = tempo;
@@ -149,14 +159,15 @@ function readSnapshot(snap) {
   }
   const bars = parseInt(snap.bars, 10);
   if (bars >= 1 && bars <= MAX_BARS) d.bars = bars;   // niveaux anciens (sans « bars ») : 1 mesure
+  // Mode séquenceur : explicite (v3) ou déduit des niveaux v2 à plusieurs mesures
+  d.seq = snap.seq === true || (snap.v === 2 && d.bars > 1);
   const total = totalFor(d.num, d.den, d.sub);
-  if (Array.isArray(snap.pos) && snap.pos.length === total * d.bars) {
-    const pos = snap.pos.map(p => ({
-      frequency: CODE_FREQ[p && p[0]] || 'never',
-      sound: AVAILABLE_SOUNDS[p && p[1]] && p[1] !== 'bell' ? p[1] : 'clave'
-    }));
-    d.positions = pos;
-  }
+  const readTrack = (arr, fallbackSound) => arr.map(p => ({
+    frequency: CODE_FREQ[p && p[0]] || 'never',
+    sound: AVAILABLE_SOUNDS[p && p[1]] ? p[1] : fallbackSound
+  }));
+  if (Array.isArray(snap.pos) && snap.pos.length === total * d.bars) d.positions = readTrack(snap.pos, 'clave');
+  if (Array.isArray(snap.posB) && snap.posB.length === total * d.bars) d.positionsB = readTrack(snap.posB, 'woodblock');
   return d;
 }
 
@@ -233,12 +244,19 @@ function CadenceMetronome({ title, initial, history, onValidate, onClose, autoSt
   const [den, setDen] = useState(init.den);
   const [sub, setSub] = useState(init.sub);
   const [bars, setBars] = useState(init.bars);
-  const [brush, setBrush] = useState('clave'); // son posé en touchant une case (séquenceur)
+  const [seq, setSeq] = useState(!!init.seq);          // mode séquenceur (2 pistes)
+  const [brush, setBrush] = useState('clave');          // son posé sur la piste A
+  const [brushB, setBrushB] = useState('woodblock');    // son posé sur la piste B
+  const [muteA, setMuteA] = useState(false);
+  const [muteB, setMuteB] = useState(false);
   const [beacon, setBeacon] = useState(init.beacon);
   const [bell, setBell] = useState(init.bell);
   const [volumes, setVolumes] = useState(init.volumes);
   const [positions, setPositions] = useState(
     () => init.positions || defaultPositions(init.num, init.den, init.sub, init.bars)
+  );
+  const [positionsB, setPositionsB] = useState(
+    () => init.positionsB || emptyTrack(init.num, init.den, init.sub, init.bars, 'woodblock')
   );
 
   const [isPlaying, setIsPlaying] = useState(false);
@@ -253,11 +271,13 @@ function CadenceMetronome({ title, initial, history, onValidate, onClose, autoSt
   const cycleSteps = total * bars;
   // Filet de sécurité : jamais d'accès hors tableau
   const pos = positions.length === cycleSteps ? positions : defaultPositions(num, den, sub, bars);
+  const posB = positionsB.length === cycleSteps ? positionsB : emptyTrack(num, den, sub, bars, 'woodblock');
+  const eb = seq ? bars : 1;   // mesures réellement jouées (la grille classique n'utilise que la 1re)
   const steps = useMemo(() => pos.map((p, i) => ({ ...p, label: layout.labels[i % total] })), [pos, layout, total]);
 
   // ─── Refs : le planificateur lit toujours les valeurs courantes, sans redémarrer ─
   const live = useRef({});
-  live.current = { tempo, num, den, sub, bars, beacon, bell, volumes, pos, layout, total };
+  live.current = { tempo, num, den, sub, bars: eb, seq, muteA, muteB, beacon, bell, volumes, pos, posB, layout, total };
 
   const audioRef = useRef(null);
   const noteRef = useRef(0);
@@ -413,9 +433,13 @@ function CadenceMetronome({ title, initial, history, onValidate, onClose, autoSt
       const count = measureRef.current - 1;             // mesures écoulées depuis le départ (0, 1, 2…)
       const legacyMeasure = (count % legacyCycle) + 1;
       const p = L.pos[idx];
-      if (p && shouldPlay(p.frequency, L.bars === 1 ? legacyMeasure : 1)) {
-        const posInUnit = stepInBar % L.layout.subsPerUnit;
-        playSound(nextTimeRef.current, p.sound, Math.floor(posInUnit) === 0);
+      const strong = Math.floor(stepInBar % L.layout.subsPerUnit) === 0;
+      if (p && !L.muteA && shouldPlay(p.frequency, L.bars === 1 ? legacyMeasure : 1)) {
+        playSound(nextTimeRef.current, p.sound, strong);
+      }
+      if (L.seq) {
+        const pb = L.posB[idx];
+        if (pb && !L.muteB && pb.frequency === 'every') playSound(nextTimeRef.current, pb.sound, strong);
       }
       if (L.beacon !== 'none' && stepInBar === 0 && count % parseInt(L.beacon, 10) === 0) {
         playSound(nextTimeRef.current, 'bell', true);
@@ -498,6 +522,7 @@ function CadenceMetronome({ title, initial, history, onValidate, onClose, autoSt
 
   // ─── Actions sur la grille (mises à jour immuables) ───────────────────────
   const basePos = (prev) => (prev.length === cycleSteps ? prev : defaultPositions(num, den, sub, bars));
+  const basePosB = (prev) => (prev.length === cycleSteps ? prev : emptyTrack(num, den, sub, bars, 'woodblock'));
   const toggleFrequency = (i) => {
     setPositions(prev => basePos(prev).map((p, k) => k !== i ? p : { ...p, frequency: FREQUENCY_ORDER[(FREQUENCY_ORDER.indexOf(p.frequency) + 1) % FREQUENCY_ORDER.length] }));
   };
@@ -505,75 +530,94 @@ function CadenceMetronome({ title, initial, history, onValidate, onClose, autoSt
     setPositions(prev => basePos(prev).map((p, k) => k !== i ? p : { ...p, sound: s }));
     setSoundSelectorOpen(null);
   };
-  // Séquenceur : touche une case → pose le son choisi ; re-touche avec le même son → retire
-  const paintCell = (i) => {
-    const cur = pos[i];
-    const removing = cur && cur.frequency === 'every' && cur.sound === brush;
-    setPositions(prev => basePos(prev).map((p, k) => k !== i ? p : (removing ? { ...p, frequency: 'never' } : { frequency: 'every', sound: brush })));
-    if (!removing) previewSound(brush);
+  // Séquenceur : touche une case → pose le son de la piste ; re-touche avec le même son → retire
+  const paintCell = (track, i) => {
+    const isA = track === 'A';
+    const br = isA ? brush : brushB;
+    const cur = (isA ? pos : posB)[i];
+    const removing = cur && cur.frequency === 'every' && cur.sound === br;
+    const base = isA ? basePos : basePosB;
+    (isA ? setPositions : setPositionsB)(prev => base(prev).map((p, k) => k !== i ? p : (removing ? { ...p, frequency: 'never' } : { frequency: 'every', sound: br })));
+    if (!removing) previewSound(br);
   };
   // Changement de signature / subdivision : on repart de zéro pour la nouvelle mesure
   const changeMeter = (n, d, s) => {
     setNum(n); setDen(d); setSub(s);
-    setPositions(defaultPositions(n, d, s, bars));
+    if (seq) setPositions(emptyTrack(n, d, s, bars, 'clave'));
+    else {
+      const first = buildLayout(n, d, s).defaults;
+      setPositions([...first, ...emptyTrack(n, d, s, bars - 1, 'clave')]);
+    }
+    setPositionsB(emptyTrack(n, d, s, bars, 'woodblock'));
     setSoundSelectorOpen(null);
   };
   // Longueur du motif : en l'allongeant, chaque nouvelle mesure reprend la précédente ; en la raccourcissant, on garde le début
   const resolvePos = (list, measure) => list.map(p => ({ ...p, frequency: shouldPlay(p.frequency, measure) ? 'every' : 'never' }));
+  const resizeTrack = (cur, old, n, legacy) => {
+    if (n <= old) return cur.slice(0, total * n);
+    const barList = [];
+    for (let b = 0; b < old; b++) barList.push(cur.slice(b * total, (b + 1) * total));
+    const fromLegacy = legacy && old === 1;   // les anciens « une sur 2 / une sur 4 » deviennent de vrais motifs
+    if (fromLegacy) barList[0] = resolvePos(barList[0], 1);
+    for (let b = old; b < n; b++) barList.push(fromLegacy ? resolvePos(cur.slice(0, total), b + 1) : barList[b - 1].map(p => ({ ...p })));
+    return barList.flat();
+  };
   const changeBars = (n) => {
-    setPositions(prev => {
-      let cur = basePos(prev);
-      const old = bars;
-      if (n > old) {
-        let barList = [];
-        for (let b = 0; b < old; b++) barList.push(cur.slice(b * total, (b + 1) * total));
-        if (old === 1) barList[0] = resolvePos(barList[0], 1);     // les anciens « une sur 2 / une sur 4 » deviennent de vrais motifs
-        for (let b = old; b < n; b++) barList.push(old === 1 ? resolvePos(cur.slice(0, total), b + 1) : barList[b - 1].map(p => ({ ...p })));
-        return barList.flat();
-      }
-      return cur.slice(0, total * n).map(p => n === 1 ? p : p);
-    });
+    setPositions(prev => resizeTrack(basePos(prev), bars, n, true));
+    setPositionsB(prev => resizeTrack(basePosB(prev), bars, n, false));
     setBars(n);
     setSoundSelectorOpen(null);
   };
-  const clearAll = () => setPositions(prev => basePos(prev).map(p => ({ ...p, frequency: 'never' })));
-  const clearBar = (b) => setPositions(prev => basePos(prev).map((p, k) => (k >= b * total && k < (b + 1) * total) ? { ...p, frequency: 'never' } : p));
-  const copyBar = (from, to) => setPositions(prev => { const cur = basePos(prev); return cur.map((p, k) => (k >= to * total && k < (to + 1) * total) ? { ...cur[from * total + (k - to * total)] } : p); });
-  const copyBarToAll = (from) => setPositions(prev => { const cur = basePos(prev); return cur.map((p, k) => ({ ...cur[from * total + (k % total)] })); });
+  // Mode séquenceur : la grille actuelle devient la piste A (1re entrée : 2 mesures), la piste B reste à dessiner
+  const toggleSeq = () => {
+    if (isPlaying) return;
+    if (!seq) {
+      if (bars === 1) changeBars(2);
+      else if (pos.slice(0, total).some(p => p.frequency === 'every_2' || p.frequency === 'every_4')) {
+        setPositions(prev => { const cur = basePos(prev); const first = cur.slice(0, total); const out = []; for (let b = 0; b < bars; b++) out.push(...resolvePos(first, b + 1)); return out; });
+      }
+      setSeq(true);
+    } else setSeq(false);
+    setSoundSelectorOpen(null);
+  };
+  const clearTrack = (t) => (t === 'A' ? setPositions : setPositionsB)(prev => (t === 'A' ? basePos : basePosB)(prev).map(p => ({ ...p, frequency: 'never' })));
+  const repeatFirstBar = (t) => (t === 'A' ? setPositions : setPositionsB)(prev => { const cur = (t === 'A' ? basePos : basePosB)(prev); return cur.map((p, k) => ({ ...cur[k % total] })); });
 
   const applyPreset = (type) => {
     setPositions(prev => {
       const base = basePos(prev);
       const perBeat = total / num;
       return base.map((p, i) => {
+        if (i >= total) return p;                       // grille classique : 1re mesure seulement
         let f = p.frequency;
         if (type === 'all') f = 'every';
         else if (type === 'none') f = 'never';
-        else if (type === 'downbeats') f = ((i % total) % perBeat === 0) ? 'every' : 'never';
-        else if (type === 'backbeat') f = ((i % total) === 2 || (i % total) === 6) ? 'every' : 'never';          // temps 2 et 4 (croches, 4/4)
-        else if (type === 'offbeats') f = ((i % total) % 2 === 1) ? 'every' : 'never';                  // les « et » (croches)
+        else if (type === 'downbeats') f = (i % perBeat === 0) ? 'every' : 'never';
+        else if (type === 'backbeat') f = (i === 2 || i === 6) ? 'every' : 'never';          // temps 2 et 4 (croches, 4/4)
+        else if (type === 'offbeats') f = (i % 2 === 1) ? 'every' : 'never';                  // les « et » (croches)
         return { ...p, frequency: f };
       });
     });
   };
 
   const validate = () => {
-    const snap = makeSnapshot({ tempo, num, den, sub, bars, beacon, bell, volumes, positions: pos });
+    const snap = makeSnapshot({ tempo, num, den, sub, bars, seq, beacon, bell, volumes, positions: pos, positionsB: posB });
     onValidate && onValidate(snap);
     setJustValidated(tempo);
   };
 
-  // ─── Aperçu du motif (1 mesure : 4 mesures de cycle ; plusieurs mesures : le motif entier) ─
+  // ─── Aperçu (grille classique : 4 mesures de cycle ; séquenceur : le motif entier, 2 pistes) ─
   const previewMeasures = useMemo(() => {
     const out = [];
-    const n = bars === 1 ? 4 : bars;
+    const n = eb === 1 && !seq ? 4 : eb;
     for (let m = 1; m <= n; m++) {
-      const slice = bars === 1 ? pos : pos.slice((m - 1) * total, m * total);
-      out.push({ measure: m, notes: slice.map(p => shouldPlay(p.frequency, bars === 1 ? m : 1) ? '♪' : '_').join(' ') });
+      const sl = (arr) => eb === 1 ? arr.slice(0, total) : arr.slice((m - 1) * total, m * total);
+      const f = (arr, m2) => sl(arr).map(p => shouldPlay(p.frequency, m2) ? '♪' : '_').join(' ');
+      out.push({ measure: m, notes: f(pos, eb === 1 ? m : 1), notesB: seq ? f(posB, 1) : null });
     }
     return out;
-  }, [pos, bars, total]);
-  const currentBar = bars > 1 && currentStep >= 0 ? Math.floor(currentStep / total) + 1 : currentMeasure;
+  }, [pos, posB, eb, seq, total]);
+  const currentBar = eb > 1 && currentStep >= 0 ? Math.floor(currentStep / total) + 1 : currentMeasure;
 
   const last = history && history.length ? history[history.length - 1] : null;
   const fmtDate = (d) => { try { const [y, m, dd] = d.split('-'); return dd + '/' + m; } catch (e) { return d; } };
@@ -717,71 +761,86 @@ function CadenceMetronome({ title, initial, history, onValidate, onClose, autoSt
     ));
   };
 
-  // ─── Séquenceur compact (motifs de plusieurs mesures) ─────────────────────
+  // ─── Séquenceur compact : 2 pistes superposées (A et B) ───────────────────
   const renderSequencer = () => {
     const perRow = 16;
     const nRows = Math.max(1, Math.ceil(total / perRow));
     const unitCount = Math.max(1, Math.ceil(total / layout.subsPerUnit));
     const unitsPerRow = Math.ceil(unitCount / nRows);
+    const rowGroups = [];
+    for (let r = 0; r < nRows; r++) {
+      const groups = [];
+      for (let u = r * unitsPerRow; u < Math.min(unitCount, (r + 1) * unitsPerRow); u++) {
+        const g = [];
+        for (let si = Math.ceil(u * layout.subsPerUnit - 1e-9); si < Math.min(total, Math.ceil((u + 1) * layout.subsPerUnit - 1e-9)); si++) g.push(si);
+        if (g.length) groups.push({ u, g });
+      }
+      rowGroups.push(groups);
+    }
+    const tracks = [
+      { id: 'A', arr: pos, br: brush, setBr: setBrush, mute: muteA, setMute: setMuteA },
+      { id: 'B', arr: posB, br: brushB, setBr: setBrushB, mute: muteB, setMute: setMuteB }
+    ];
+    const smallBtn = { fontSize: '0.7rem', padding: '0.25rem 0.5rem', borderRadius: 6, background: '#334155', color: '#e2e8f0' };
     return (
       <div>
-        <div className="text-slate-300 text-sm mb-2">Son à poser :</div>
-        <div className="flex flex-wrap gap-2 mb-4">
-          {Object.entries(AVAILABLE_SOUNDS).map(([key, snd]) => (
-            <button key={key} type="button" onClick={() => { setBrush(key); previewSound(key); }}
-              className="rounded-lg font-bold text-white"
-              style={{ backgroundColor: snd.color, padding: '0.4rem 0.7rem', fontSize: '0.8rem', outline: brush === key ? '3px solid #fbbf24' : 'none', opacity: brush === key ? 1 : 0.65 }}>
-              {snd.icon} {snd.label}
-            </button>
-          ))}
-        </div>
+        {tracks.map(t => (
+          <div key={t.id} className="mb-3 p-2 rounded-lg" style={{ background: '#0f172a', border: '2px solid #1e293b' }}>
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-white font-bold">Piste {t.id}</span>
+              <span className="flex gap-1">
+                <button type="button" data-mute={t.id} aria-pressed={t.mute} onClick={() => t.setMute(m => !m)}
+                  style={{ ...smallBtn, background: t.mute ? '#b91c1c' : '#334155', color: '#fff', fontWeight: 700 }}>{t.mute ? '🔇 Muet' : '🔊 Muet'}</button>
+                {bars > 1 && <button type="button" data-repeat={t.id} onClick={() => repeatFirstBar(t.id)} style={smallBtn}>Répéter la mes. 1</button>}
+                <button type="button" data-clear={t.id} onClick={() => clearTrack(t.id)} style={smallBtn}>Vider</button>
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {Object.entries(AVAILABLE_SOUNDS).map(([key, snd]) => (
+                <button key={key} type="button" data-brush={t.id + key} onClick={() => { t.setBr(key); previewSound(key); }}
+                  className="rounded-lg font-bold text-white"
+                  style={{ backgroundColor: snd.color, padding: '0.35rem 0.6rem', fontSize: '0.78rem', outline: t.br === key ? '3px solid #fbbf24' : 'none', opacity: t.br === key ? 1 : 0.6 }}>
+                  {snd.icon} {snd.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
+
         {Array.from({ length: bars }, (_, b) => {
           const isCurBar = isPlaying && currentBar === b + 1;
-          const rowsOfBar = [];
-          for (let r = 0; r < nRows; r++) {
-            const fromU = r * unitsPerRow, toU = Math.min(unitCount, (r + 1) * unitsPerRow);
-            const groups = [];
-            for (let u = fromU; u < toU; u++) {
-              const g = [];
-              for (let k = 0; k < layout.subsPerUnit; k++) {
-                const si = Math.round(u * layout.subsPerUnit + k);
-                if (si < total && Math.floor(u * layout.subsPerUnit + k) === si && si >= u * layout.subsPerUnit - 1e-9) g.push(si);
-              }
-              if (g.length) groups.push({ u, g });
-            }
-            rowsOfBar.push(groups);
-          }
           return (
             <div key={b} className="mb-3 p-2 rounded-lg" style={{ background: isCurBar ? '#1e293b' : '#0f172a', border: isCurBar ? '2px solid #4ade80' : '2px solid #1e293b' }}>
-              <div className="flex items-center justify-between mb-1">
-                <span className={isCurBar ? 'text-green-400 font-bold text-sm' : 'text-slate-300 text-sm font-semibold'}>Mesure {b + 1}</span>
-                <span className="flex gap-1">
-                  {b > 0 && <button type="button" onClick={() => copyBar(b - 1, b)} className="metro-chip" style={{ fontSize: '0.7rem', padding: '0.2rem 0.5rem', borderRadius: 6, background: '#334155', color: '#e2e8f0' }}>Copier la {b}</button>}
-                  <button type="button" onClick={() => clearBar(b)} className="metro-chip" style={{ fontSize: '0.7rem', padding: '0.2rem 0.5rem', borderRadius: 6, background: '#334155', color: '#e2e8f0' }}>Vider</button>
-                </span>
-              </div>
-              {rowsOfBar.map((groups, r) => (
-                <div key={r} className="flex mb-1" style={{ gap: 6 }}>
-                  {groups.map(({ u, g }) => (
-                    <div key={u} className="flex" style={{ gap: 2, flex: g.length + ' 1 0', minWidth: 0 }}>
-                      {g.map(si => {
-                        const gi = b * total + si;
-                        const c = pos[gi];
-                        const on = c && c.frequency === 'every';
-                        const snd = AVAILABLE_SOUNDS[(c && c.sound)] || AVAILABLE_SOUNDS.clave;
-                        const isActive = isPlaying && currentStep === gi;
-                        const isDown = Math.floor(si % layout.subsPerUnit) === 0;
-                        return (
-                          <button key={si} type="button" data-cell={gi} data-on={on ? 1 : 0} onClick={() => paintCell(gi)}
-                            aria-label={`Mesure ${b + 1}, ${layout.labels[si]}`}
-                            style={{ flex: '1 1 0', minWidth: 0, height: 44, borderRadius: 6, fontSize: '0.85rem', lineHeight: 1,
-                              background: on ? snd.color : '#1e293b',
-                              border: isActive ? '2px solid #fbbf24' : (isDown ? '2px solid #475569' : '2px solid #334155'),
-                              color: '#fff', opacity: isPlaying && !isActive ? 0.7 : 1 }}>
-                            {on ? snd.icon : <span style={{ color: '#64748b', fontSize: '0.6rem' }}>{layout.labels[si]}</span>}
-                          </button>
-                        );
-                      })}
+              <div className={isCurBar ? 'text-green-400 font-bold text-sm mb-1' : 'text-slate-300 text-sm font-semibold mb-1'}>Mesure {b + 1}</div>
+              {rowGroups.map((groups, r) => (
+                <div key={r} className="mb-1">
+                  {tracks.map(t => (
+                    <div key={t.id} className="flex items-center mb-1" style={{ gap: 4 }}>
+                      <span className="text-slate-400 font-bold" style={{ width: 12, fontSize: '0.7rem', flexShrink: 0 }}>{t.id}</span>
+                      <div className="flex flex-1" style={{ gap: 6, minWidth: 0 }}>
+                        {groups.map(({ u, g }) => (
+                          <div key={u} className="flex" style={{ gap: 2, flex: g.length + ' 1 0', minWidth: 0 }}>
+                            {g.map(si => {
+                              const gi = b * total + si;
+                              const c = t.arr[gi];
+                              const on = c && c.frequency === 'every';
+                              const snd = AVAILABLE_SOUNDS[(c && c.sound)] || AVAILABLE_SOUNDS.clave;
+                              const isActive = isPlaying && currentStep === gi;
+                              const isDown = Math.floor(si % layout.subsPerUnit) === 0;
+                              return (
+                                <button key={si} type="button" data-cell={t.id + gi} data-on={on ? 1 : 0} onClick={() => paintCell(t.id, gi)}
+                                  aria-label={`Piste ${t.id}, mesure ${b + 1}, ${layout.labels[si]}`}
+                                  style={{ flex: '1 1 0', minWidth: 0, height: 38, borderRadius: 6, fontSize: '0.8rem', lineHeight: 1,
+                                    background: on ? snd.color : '#1e293b',
+                                    border: isActive ? '2px solid #fbbf24' : (isDown ? '2px solid #475569' : '2px solid #334155'),
+                                    color: '#fff', opacity: (t.mute ? 0.35 : 1) * (isPlaying && !isActive ? 0.7 : 1) }}>
+                                  {on ? snd.icon : <span style={{ color: '#64748b', fontSize: '0.6rem' }}>{layout.labels[si]}</span>}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -789,7 +848,7 @@ function CadenceMetronome({ title, initial, history, onValidate, onClose, autoSt
             </div>
           );
         })}
-        <div className="text-slate-500 text-xs">Touche une case pour poser le son choisi ; touche-la de nouveau (même son) pour l'effacer.</div>
+        <div className="text-slate-500 text-xs">Touche une case pour poser le son de la piste ; touche-la de nouveau (même son) pour l'effacer.</div>
       </div>
     );
   };
@@ -869,37 +928,45 @@ function CadenceMetronome({ title, initial, history, onValidate, onClose, autoSt
             </div>
           </div>
 
-          {/* Longueur du motif */}
+          {/* Mode séquenceur */}
           <div className="metro-card p-4 mb-4">
-            <label className="block text-slate-300 text-sm mb-2">Longueur du motif (clave, pattern sur plusieurs mesures)</label>
-            <div className="flex items-center justify-center gap-4">
-              <button type="button" disabled={isPlaying || bars <= 1} onClick={() => changeBars(bars - 1)} className="metro-btn bg-slate-600" style={{ minWidth: 48 }} aria-label="Moins de mesures">−</button>
-              <div className="text-center" style={{ minWidth: 110 }}>
-                <span className="text-white font-mono text-3xl font-bold" data-bars>{bars}</span>
-                <span className="text-slate-400 ml-2">{bars > 1 ? 'mesures' : 'mesure'}</span>
+            <button type="button" onClick={toggleSeq} disabled={isPlaying} data-seq-toggle aria-pressed={seq}
+              className={`w-full py-3 px-4 rounded-lg font-semibold text-white ${seq ? 'bg-green-600' : 'bg-slate-600'}`}
+              style={{ opacity: isPlaying ? 0.6 : 1 }}>
+              🎼 Mode séquenceur : {seq ? 'activé' : 'désactivé'}
+            </button>
+            {!seq && <div className="mt-2 text-slate-500 text-xs text-center">Patterns sur plusieurs mesures, 2 pistes jouées ensemble (claves).</div>}
+            {seq && (
+              <div className="mt-3">
+                <label className="block text-slate-300 text-sm mb-2 text-center">Longueur du motif</label>
+                <div className="flex items-center justify-center gap-4">
+                  <button type="button" disabled={isPlaying || bars <= 1} onClick={() => changeBars(bars - 1)} className="metro-btn bg-slate-600" style={{ minWidth: 48 }} aria-label="Moins de mesures">−</button>
+                  <div className="text-center" style={{ minWidth: 110 }}>
+                    <span className="text-white font-mono text-3xl font-bold" data-bars>{bars}</span>
+                    <span className="text-slate-400 ml-2">{bars > 1 ? 'mesures' : 'mesure'}</span>
+                  </div>
+                  <button type="button" disabled={isPlaying || bars >= MAX_BARS} onClick={() => changeBars(bars + 1)} className="metro-btn bg-slate-600" style={{ minWidth: 48 }} aria-label="Plus de mesures">+</button>
+                </div>
+                <div className="mt-2 text-slate-500 text-xs text-center">Les deux pistes ont la même longueur et se répètent en boucle.</div>
               </div>
-              <button type="button" disabled={isPlaying || bars >= MAX_BARS} onClick={() => changeBars(bars + 1)} className="metro-btn bg-slate-600" style={{ minWidth: 48 }} aria-label="Plus de mesures">+</button>
-            </div>
-            <div className="mt-2 text-slate-500 text-xs text-center">
-              {bars === 1 ? "1 mesure : grille classique (avec « une sur 2 / une sur 4 »)." : `Le motif de ${bars} mesures se répète en boucle.`}
-            </div>
+            )}
           </div>
 
           {/* Grille interactive */}
           <div className="metro-card p-3 sm:p-5 mb-4">
-            <h2 className="text-white text-lg font-semibold mb-3">{bars > 1 ? `Motif — ${bars} mesures en ${num}/${den}` : `Grille — ${num}/${den} en ${SUBDIVISION_OPTIONS[sub].label.toLowerCase()}`}</h2>
-            {bars === 1 && (
+            <h2 className="text-white text-lg font-semibold mb-3">{seq ? `Séquenceur — ${bars} mesure${bars > 1 ? 's' : ''} en ${num}/${den}` : `Grille — ${num}/${den} en ${SUBDIVISION_OPTIONS[sub].label.toLowerCase()}`}</h2>
+            {!seq && (
               <div className="mb-4 text-slate-400 text-sm">
                 <div className="mb-1"><strong>Fréquence :</strong> touche le haut d'une note pour passer de {FREQUENCY_ORDER.map(f => FREQUENCIES[f].label).join(' → ')}</div>
                 <div><strong>Son :</strong> touche le bouton coloré en bas</div>
               </div>
             )}
             <div ref={gridMeasureRef} style={{ width: '100%', height: 0 }} aria-hidden="true" />
-            {bars === 1 ? renderGrid() : renderSequencer()}
+            {seq ? renderSequencer() : renderGrid()}
           </div>
 
-          {/* Actions rapides */}
-          <div className="metro-card p-4 mb-4">
+          {/* Actions rapides (grille classique) */}
+          {!seq && (<div className="metro-card p-4 mb-4">
             <h2 className="text-white text-lg font-semibold mb-3">Actions rapides</h2>
             <div className="grid grid-cols-2 gap-3">
               <button onClick={() => applyPreset('all')} className="metro-btn bg-green-600">Tout activer</button>
@@ -909,15 +976,16 @@ function CadenceMetronome({ title, initial, history, onValidate, onClose, autoSt
               <button onClick={() => applyPreset('offbeats')} disabled={sub !== 'eighth'} className="metro-btn bg-indigo-600 col-span-2">Contre-temps (les « et »)</button>
             </div>
             <div className="mt-2 text-slate-500 text-xs">Backbeat : croches en 4/4. Contre-temps : croches.</div>
-          </div>
+          </div>)}
 
           {/* Aperçu */}
-          <Fold title={bars === 1 ? "Aperçu sur 4 mesures" : `Aperçu du motif (${bars} mesures)`}>
+          <Fold title={!seq ? "Aperçu sur 4 mesures" : `Aperçu du motif (${eb} mesure${eb > 1 ? "s" : ""}, 2 pistes)`}>
             <div className="space-y-2 font-mono">
-              {previewMeasures.map(({ measure, notes }) => (
+              {previewMeasures.map(({ measure, notes, notesB }) => (
                 <div key={measure} className={`p-3 rounded ${isPlaying && currentBar === measure ? 'bg-slate-700 border-l-4 border-green-400' : 'bg-slate-900'}`}>
                   <span className={isPlaying && currentBar === measure ? 'text-green-400 font-bold' : 'text-slate-400'}>Mes.{measure} :</span>
-                  <span className="text-white ml-3 text-lg break-all">{notes}</span>
+                  <span className="text-white ml-3 text-lg break-all">{seq ? 'A ' : ''}{notes}</span>
+                  {notesB !== null && <div className="text-slate-300 text-lg break-all" style={{ marginLeft: '4.2rem' }}>B {notesB}</div>}
                 </div>
               ))}
             </div>
