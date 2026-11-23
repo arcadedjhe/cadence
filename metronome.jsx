@@ -9,6 +9,11 @@
 //   onValidate  : (niveau) => void  — appelé par « Valider ce niveau »
 //   onClose     : () => void
 //   autoStart   : lance la lecture à l'ouverture (true par défaut)
+//   claves      : banque de claves [{ id, name, num, den, sub, bars, pos }] (boutons « Ouvrir » des pistes)
+//   onSaveClave : (clave) => void — « Enregistrer » d'une piste dans la banque
+//   free        : mode libre (hors exercice) : pas de validation, réglages mémorisés via onAutoSave
+//   onAutoSave  : (niveau) => void — appelé (différé) à chaque changement en mode libre
+//   autoSeq     : ouvre directement en mode séquenceur (création de clave)
 // Tout est enveloppé dans une fonction : aucun nom global (pas de conflit avec Cadence).
 // ============================================================================
 (function () {
@@ -171,6 +176,35 @@ function readSnapshot(snap) {
   return d;
 }
 
+// ─── Banque de claves : un motif de piste (signature, subdivision, mesures, cases) ─
+function claveToCells(c) {
+  if (!c || typeof c !== 'object' || !Array.isArray(c.pos)) return null;
+  const num = parseInt(c.num, 10), bars = parseInt(c.bars, 10);
+  if (!(num >= 2 && num <= 15) || ![2, 4, 8].includes(c.den) || !SUBDIVISION_OPTIONS[c.sub]) return null;
+  if (!(bars >= 1 && bars <= MAX_BARS)) return null;
+  const total = totalFor(num, c.den, c.sub);
+  if (c.pos.length !== total * bars) return null;
+  const cells = c.pos.map(p => ({
+    frequency: p && p[0] === 'e' ? 'every' : 'never',
+    sound: AVAILABLE_SOUNDS[p && p[1]] ? p[1] : 'clave'
+  }));
+  return { num, den: c.den, sub: c.sub, bars, total, cells };
+}
+function makeClave(name, s) {
+  return {
+    id: 'cl' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    name, num: s.num, den: s.den, sub: s.sub, bars: s.bars,
+    pos: s.positions.map(p => [p.frequency === 'every' ? 'e' : 'n', p.sound]),
+    createdAt: new Date().toISOString().slice(0, 10)
+  };
+}
+function claveInfo(c) {
+  const v = claveToCells(c);
+  if (!v) return 'clave illisible';
+  const notes = v.cells.filter(x => x.frequency === 'every').length;
+  return v.num + '/' + v.den + ' · ' + SUBDIVISION_OPTIONS[v.sub].label.toLowerCase() + ' · ' + v.bars + ' mes. · ' + notes + ' note' + (notes > 1 ? 's' : '');
+}
+
 // ─── Petit champ numérique − / + avec saisie directe (tempo) ─────────────────
 function TempoField({ value, onChange, onStep }) {
   const [text, setText] = useState(String(value));
@@ -235,7 +269,7 @@ function Fold({ title, children, defaultOpen = false }) {
 // ============================================================================
 // COMPOSANT PRINCIPAL
 // ============================================================================
-function CadenceMetronome({ title, initial, history, onValidate, onClose, autoStart = true }) {
+function CadenceMetronome({ title, initial, history, onValidate, onClose, autoStart = true, claves, onSaveClave, free = false, onAutoSave, autoSeq = false }) {
   const init = useMemo(() => readSnapshot(initial), []); // lu une seule fois à l'ouverture
 
   // ─── États (le niveau chargé est appliqué dès le premier rendu) ───────────
@@ -249,6 +283,9 @@ function CadenceMetronome({ title, initial, history, onValidate, onClose, autoSt
   const [brushB, setBrushB] = useState('woodblock');    // son posé sur la piste B
   const [muteA, setMuteA] = useState(false);
   const [muteB, setMuteB] = useState(false);
+  const [modal, setModal] = useState(null);       // { type: 'open'|'save'|'confirm', track, clave }
+  const [saveName, setSaveName] = useState('');
+  const [notice, setNotice] = useState('');
   const [beacon, setBeacon] = useState(init.beacon);
   const [bell, setBell] = useState(init.bell);
   const [volumes, setVolumes] = useState(init.volumes);
@@ -580,6 +617,54 @@ function CadenceMetronome({ title, initial, history, onValidate, onClose, autoSt
     } else setSeq(false);
     setSoundSelectorOpen(null);
   };
+  // ─── Banque de claves ─────────────────────────────────────────────────────
+  const sameMeterAs = (v) => v.num === num && v.den === den && v.sub === sub;
+  const applyClave = (track, c) => {
+    const v = claveToCells(c);
+    if (!v) return;
+    const same = sameMeterAs(v);
+    const nb = same ? Math.max(bars, v.bars) : v.bars;             // une clave plus courte se répète sur toute la longueur
+    const tiled = [];
+    for (let b = 0; b < nb; b++) tiled.push(...v.cells.slice((b % v.bars) * v.total, (b % v.bars + 1) * v.total).map(p => ({ ...p })));
+    const otherIsA = track === 'B';
+    const otherNew = same ? resizeTrack(otherIsA ? pos : posB, bars, nb, otherIsA) : emptyTrack(v.num, v.den, v.sub, nb, otherIsA ? 'clave' : 'woodblock');
+    setNum(v.num); setDen(v.den); setSub(v.sub); setBars(nb);
+    if (track === 'A') { setPositions(tiled); setPositionsB(otherNew); } else { setPositionsB(tiled); setPositions(otherNew); }
+    setSeq(true);
+    setModal(null);
+    setNotice('📂 « ' + c.name + ' » chargée sur la piste ' + track);
+  };
+  const requestLoad = (track, c) => {
+    const v = claveToCells(c);
+    if (!v) return;
+    const other = track === 'A' ? posB : pos;
+    if (!sameMeterAs(v) && other.some(p => p.frequency !== 'never')) setModal({ type: 'confirm', track, clave: c });
+    else applyClave(track, c);
+  };
+  const saveTrackAsClave = () => {
+    if (!modal) return;
+    const name = saveName.trim();
+    if (!name) return;
+    onSaveClave && onSaveClave(makeClave(name, { num, den, sub, bars, positions: modal.track === 'A' ? pos : posB }));
+    setModal(null);
+    setNotice('💾 « ' + name + ' » enregistrée dans la banque de claves');
+  };
+  useEffect(() => { if (!notice) return; const t = setTimeout(() => setNotice(''), 3500); return () => clearTimeout(t); }, [notice]);
+  useEffect(() => { if (autoSeq && !autoStart) toggleSeq(); }, []);
+
+  // Mode libre : les réglages sont mémorisés automatiquement (différé), plus un envoi final à la fermeture
+  const autoRef = useRef(null);
+  const autoFirst = useRef(true);
+  useEffect(() => {
+    if (!onAutoSave) return;
+    if (autoFirst.current) { autoFirst.current = false; return; }
+    const snap = makeSnapshot({ tempo, num, den, sub, bars, seq, beacon, bell, volumes, positions: pos, positionsB: posB });
+    autoRef.current = snap;
+    const t = setTimeout(() => { onAutoSave(snap); autoRef.current = null; }, 700);
+    return () => clearTimeout(t);
+  }, [tempo, num, den, sub, bars, seq, beacon, bell, volumes, positions, positionsB]);
+  useEffect(() => () => { if (onAutoSave && autoRef.current) onAutoSave(autoRef.current); }, []);
+
   const clearTrack = (t) => (t === 'A' ? setPositions : setPositionsB)(prev => (t === 'A' ? basePos : basePosB)(prev).map(p => ({ ...p, frequency: 'never' })));
   const repeatFirstBar = (t) => (t === 'A' ? setPositions : setPositionsB)(prev => { const cur = (t === 'A' ? basePos : basePosB)(prev); return cur.map((p, k) => ({ ...cur[k % total] })); });
 
@@ -784,16 +869,19 @@ function CadenceMetronome({ title, initial, history, onValidate, onClose, autoSt
     const smallBtn = { fontSize: '0.7rem', padding: '0.25rem 0.5rem', borderRadius: 6, background: '#334155', color: '#e2e8f0' };
     return (
       <div>
+        {notice && <div className="mb-3 text-green-400 text-sm font-semibold" data-notice>{notice}</div>}
         {tracks.map(t => (
           <div key={t.id} className="mb-3 p-2 rounded-lg" style={{ background: '#0f172a', border: '2px solid #1e293b' }}>
             <div className="flex items-center justify-between mb-2">
               <span className="text-white font-bold">Piste {t.id}</span>
-              <span className="flex gap-1">
-                <button type="button" data-mute={t.id} aria-pressed={t.mute} onClick={() => t.setMute(m => !m)}
-                  style={{ ...smallBtn, background: t.mute ? '#b91c1c' : '#334155', color: '#fff', fontWeight: 700 }}>{t.mute ? '🔇 Muet' : '🔊 Muet'}</button>
-                {bars > 1 && <button type="button" data-repeat={t.id} onClick={() => repeatFirstBar(t.id)} style={smallBtn}>Répéter la mes. 1</button>}
-                <button type="button" data-clear={t.id} onClick={() => clearTrack(t.id)} style={smallBtn}>Vider</button>
-              </span>
+              <button type="button" data-mute={t.id} aria-pressed={t.mute} onClick={() => t.setMute(m => !m)}
+                style={{ ...smallBtn, background: t.mute ? '#b91c1c' : '#334155', color: '#fff', fontWeight: 700, fontSize: '0.8rem', padding: '0.3rem 0.7rem' }}>{t.mute ? '🔇 Muet' : '🔊 Muet'}</button>
+            </div>
+            <div className="flex flex-wrap gap-1 mb-2">
+              {claves && <button type="button" data-open={t.id} disabled={isPlaying} onClick={() => setModal({ type: 'open', track: t.id })} style={{ ...smallBtn, opacity: isPlaying ? 0.5 : 1 }}>📂 Ouvrir</button>}
+              {onSaveClave && <button type="button" data-save={t.id} disabled={isPlaying} onClick={() => { setSaveName(''); setModal({ type: 'save', track: t.id }); }} style={{ ...smallBtn, opacity: isPlaying ? 0.5 : 1 }}>💾 Enregistrer</button>}
+              {bars > 1 && <button type="button" data-repeat={t.id} onClick={() => repeatFirstBar(t.id)} style={smallBtn}>Répéter la mes. 1</button>}
+              <button type="button" data-clear={t.id} onClick={() => clearTrack(t.id)} style={smallBtn}>Vider</button>
             </div>
             <div className="flex flex-wrap gap-2">
               {Object.entries(AVAILABLE_SOUNDS).map(([key, snd]) => (
@@ -1030,7 +1118,7 @@ function CadenceMetronome({ title, initial, history, onValidate, onClose, autoSt
           </Fold>
 
           {/* Historique */}
-          <Fold title={`Historique des niveaux validés${history && history.length ? ' (' + history.length + ')' : ''}`}>
+          {!free && <Fold title={`Historique des niveaux validés${history && history.length ? ' (' + history.length + ')' : ''}`}>
             {history && history.length ? (
               <div className="space-y-1">
                 {history.slice().reverse().slice(0, 30).map((h, i) => (
@@ -1042,7 +1130,7 @@ function CadenceMetronome({ title, initial, history, onValidate, onClose, autoSt
                 ))}
               </div>
             ) : (<div className="text-slate-400 text-sm">Aucun niveau validé pour l'instant.</div>)}
-          </Fold>
+          </Fold>}
 
           {/* Aide */}
           <Fold title="Mode d'emploi et légende">
@@ -1064,6 +1152,14 @@ function CadenceMetronome({ title, initial, history, onValidate, onClose, autoSt
       </div>
 
       {/* Barre fixe : valider le niveau */}
+      {free ? (
+        <div className="metro-validate">
+          <div className="min-w-0">
+            <div className="text-white font-mono text-lg leading-tight">{tempo} bpm · {num}/{den}</div>
+            <div className="text-xs text-slate-400 truncate">Réglages mémorisés automatiquement</div>
+          </div>
+        </div>
+      ) : (
       <div className="metro-validate">
         <div className="min-w-0">
           <div className="text-white font-mono text-lg leading-tight">{tempo} bpm · {num}/{den}</div>
@@ -1075,6 +1171,77 @@ function CadenceMetronome({ title, initial, history, onValidate, onClose, autoSt
           {hasChanged ? '✅ Validé' : 'Valider ce niveau'}
         </button>
       </div>
+      )}
+
+      {/* Banque de claves : ouvrir / enregistrer / confirmer */}
+      {modal && (
+        <div className="fixed inset-0 flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.75)', zIndex: 2000 }} onClick={() => setModal(null)}>
+          <div className="bg-slate-800 rounded-2xl p-5 max-w-sm w-full border-2 border-slate-600" style={{ maxHeight: '80vh', overflowY: 'auto' }} onClick={(e) => e.stopPropagation()}>
+            {modal.type === 'open' && (() => {
+              const list = (claves || []).filter(c => claveToCells(c)).sort((a, b) => String(a.name).localeCompare(String(b.name), 'fr', { sensitivity: 'base' }));
+              return (
+                <div>
+                  <h3 className="text-white text-xl font-bold mb-1">Ouvrir une clave</h3>
+                  <p className="text-slate-400 text-sm mb-3">Elle sera chargée sur la piste {modal.track}.</p>
+                  {list.length === 0 ? (
+                    <p className="text-slate-400 text-sm mb-3">Aucune clave enregistrée. Dessine un motif sur une piste puis touche « 💾 Enregistrer ».</p>
+                  ) : (
+                    <div className="space-y-2 mb-3">
+                      {list.map(c => (
+                        <button key={c.id} type="button" data-clave-id={c.id} onClick={() => requestLoad(modal.track, c)}
+                          className="w-full text-left rounded-lg p-3" style={{ background: '#1a1a18', border: '1px solid #4a4a43' }}>
+                          <div className="text-white font-semibold">{c.name}</div>
+                          <div className="text-slate-400 text-xs">{claveInfo(c)}</div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  <button onClick={() => setModal(null)} className="w-full py-3 bg-slate-700 text-white rounded-lg font-semibold">Fermer</button>
+                </div>
+              );
+            })()}
+            {modal.type === 'confirm' && (() => {
+              const v = claveToCells(modal.clave);
+              return (
+                <div>
+                  <h3 className="text-white text-xl font-bold mb-2">Changer la signature ?</h3>
+                  <p className="text-slate-300 text-sm mb-4">« {modal.clave.name} » est en {v ? claveInfo(modal.clave) : ''}. Pour la charger, la signature et la subdivision des deux pistes vont changer et l'autre piste sera vidée.</p>
+                  <div className="grid grid-cols-2 gap-3">
+                    <button onClick={() => setModal(null)} className="py-3 bg-slate-700 text-white rounded-lg font-semibold">Annuler</button>
+                    <button data-confirm-load onClick={() => applyClave(modal.track, modal.clave)} className="py-3 bg-green-600 text-white rounded-lg font-semibold">Charger</button>
+                  </div>
+                </div>
+              );
+            })()}
+            {modal.type === 'save' && (() => {
+              const arr = modal.track === 'A' ? pos : posB;
+              const hasNotes = arr.some(p => p.frequency === 'every');
+              const exists = (claves || []).some(c => String(c.name).trim().toLowerCase() === saveName.trim().toLowerCase());
+              return (
+                <div>
+                  <h3 className="text-white text-xl font-bold mb-1">Enregistrer la piste {modal.track}</h3>
+                  <p className="text-slate-400 text-sm mb-3">{num}/{den} · {SUBDIVISION_OPTIONS[sub].label.toLowerCase()} · {bars} mesure{bars > 1 ? 's' : ''}</p>
+                  {!hasNotes ? (
+                    <p className="text-orange-400 text-sm mb-3">Cette piste est vide : pose d'abord quelques notes.</p>
+                  ) : (
+                    <div>
+                      <input data-clave-name type="text" value={saveName} autoFocus maxLength={60} placeholder="Nom de la clave (ex. Son clave 3-2)"
+                        onChange={(e) => setSaveName(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') saveTrackAsClave(); }}
+                        style={{ width: '100%', padding: '0.7rem', borderRadius: 8, background: '#1a1a18', color: '#f5ecd6', border: '1px solid #6b6b62', fontSize: '1rem' }} />
+                      {exists && <p className="text-orange-400 text-xs mt-2">Une clave porte déjà ce nom : elle sera remplacée.</p>}
+                    </div>
+                  )}
+                  <div className="grid grid-cols-2 gap-3 mt-4">
+                    <button onClick={() => setModal(null)} className="py-3 bg-slate-700 text-white rounded-lg font-semibold">Annuler</button>
+                    <button data-confirm-save disabled={!hasNotes || !saveName.trim()} onClick={saveTrackAsClave} className="py-3 bg-green-600 text-white rounded-lg font-semibold" style={{ opacity: (!hasNotes || !saveName.trim()) ? 0.5 : 1 }}>Enregistrer</button>
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        </div>
+      )}
 
       {/* Sélecteur de son */}
       {soundSelectorOpen !== null && soundSelectorOpen < total && (
@@ -1104,5 +1271,5 @@ function CadenceMetronome({ title, initial, history, onValidate, onClose, autoSt
 
 window.CadenceMetronome = CadenceMetronome;
 // Fonctions pures exposées pour les tests
-window.CadenceMetronomeInternals = { buildLayout, totalFor, makeSnapshot, readSnapshot };
+window.CadenceMetronomeInternals = { buildLayout, totalFor, makeSnapshot, readSnapshot, claveToCells, makeClave };
 })();

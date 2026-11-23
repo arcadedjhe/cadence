@@ -1,4 +1,4 @@
-const CACHE_NAME = 'cadence-v4';
+const CACHE_NAME = 'cadence-v5';
 const BASE = '/cadence/';
 const INDEX = BASE + 'index.html';
 

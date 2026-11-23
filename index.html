@@ -548,7 +548,7 @@ function loadJSZip() {
 }
 
 async function buildBackup(data, onProgress) {
-  const payload = { app: 'cadence', version: 2, exportedAt: new Date().toISOString(), items: data.items, sessions: data.sessions, settings: data.settings, metro: data.metro || {} };
+  const payload = { app: 'cadence', version: 2, exportedAt: new Date().toISOString(), items: data.items, sessions: data.sessions, settings: data.settings, metro: data.metro || {}, claves: data.claves || [] };
   const ids = collectPhotoIds(data.items);
   const day = localISO(new Date());
   if (!ids.length) {
@@ -1438,7 +1438,7 @@ function ExtraExercisePanel({ items, onAdd, onClose }) {
 }
 
 // ─── TODAY VIEW ───────────────────────────────────────────────────────────────
-function TodayView({ items, settings, sessions, setSessions, setItems, metro, setMetro }) {
+function TodayView({ items, settings, sessions, setSessions, setItems, metro, setMetro, claves, saveClave }) {
   // Métronome : ouvert depuis un bloc, se charge sur le dernier niveau validé de l'exercice
   const [metroBlock, setMetroBlock] = useState(null);
   const [MetroComp, setMetroComp] = useState(null);
@@ -1640,6 +1640,7 @@ function TodayView({ items, settings, sessions, setSessions, setItems, metro, se
           initial={metro && metro[metroBlock.itemId] ? metro[metroBlock.itemId].cfg : null}
           history={metro && metro[metroBlock.itemId] ? metro[metroBlock.itemId].history : []}
           onValidate={(snap) => saveMetroLevel(metroBlock.itemId, snap)}
+          claves={claves} onSaveClave={saveClave}
           onClose={() => setMetroBlock(null)} autoStart={true} />,
         document.body
       )}
@@ -2932,7 +2933,16 @@ function App() {
   const [sessions, setSessions, sl, slf]  = useStorage('pm_sessions', []);
   const [settings, setSettings, stl, stlf] = useStorage('pm_settings', DEFAULT_SETTINGS);
   const [metro, setMetro, ml, mlf] = useStorage('pm_metro', {});
-  const loadFailed = !!(ilf || slf || stlf || mlf);
+  const [claves, setClaves, cll, cllf] = useStorage('pm_claves', []);
+  const loadFailed = !!(ilf || slf || stlf || mlf || cllf);
+  // Banque de claves : une clave du même nom est remplacée
+  const saveClave = (c) => setClaves(prev => {
+    const list = Array.isArray(prev) ? prev : [];
+    const key = String(c.name).trim().toLowerCase();
+    const i = list.findIndex(x => String(x.name).trim().toLowerCase() === key);
+    if (i >= 0) { const cp = [...list]; cp[i] = { ...c, id: list[i].id }; return cp; }
+    return [...list, c];
+  });
   const [tab, setTab] = useState('today');
   const [saveStatus, setSaveStatus] = useState(null);
   const [saveError, setSaveError] = useState(false);
@@ -2980,7 +2990,7 @@ function App() {
   // Export : .json (sans photo) ou .zip (données + photos)
   const exportData = async (progress) => {
     if (loadFailed) return { ok: false, msg: "Lecture de tes données impossible : export bloqué (il contiendrait des données d'exemple). Recharge l'appli." };
-    const r = await buildBackup({ items, sessions, settings, metro }, progress);
+    const r = await buildBackup({ items, sessions, settings, metro, claves }, progress);
     downloadBlob(r.blob, r.filename);
     try { localStorage.setItem('cadence_last_export', localISO(new Date())); } catch(_) {}
     const warn = r.missing ? '\n⚠️ ' + r.missing + ' photo(s) introuvable(s) (hors connexion ?) : sauvegarde incomplète, réessaie avec du réseau.' : '';
@@ -2997,7 +3007,7 @@ function App() {
       'Tes données actuelles seront écrasées (une copie de sécurité est gardée sur Drive).');
     if (!ok) return { ok: false, msg: 'Import annulé.' };
     progress('Copie de sécurité…');
-    await DriveDB.set('pm_backup_before_import.json', { savedAt: new Date().toISOString(), items, sessions, settings, metro });
+    await DriveDB.set('pm_backup_before_import.json', { savedAt: new Date().toISOString(), items, sessions, settings, metro, claves });
     let uploaded = 0;
     if (zip && photoNames.length) uploaded = await restorePhotos(zip, photoNames, progress);
     progress('Enregistrement des données…');
@@ -3009,6 +3019,8 @@ function App() {
     // Niveaux du métronome : remplacés seulement si la sauvegarde en contient (anciennes sauvegardes : on garde les actuels)
     const newMetro = data.metro && typeof data.metro === 'object' && !Array.isArray(data.metro) ? data.metro : null;
     if (newMetro) { await DriveDB.set('pm_metro.json', newMetro); setMetro(newMetro); }
+    // Banque de claves : remplacée seulement si la sauvegarde en contient une
+    if (Array.isArray(data.claves)) { await DriveDB.set('pm_claves.json', data.claves); setClaves(data.claves); }
     setItems(data.items); setSessions(newSessions); setSettings(newSettings);
     return { ok: true, msg: '✅ Import terminé : ' + data.items.length + ' éléments, ' + newSessions.length + ' sessions, ' + photoNames.length + ' photo(s) (' + uploaded + ' envoyée(s) sur Drive).' };
   };
@@ -3041,6 +3053,7 @@ function App() {
         DriveDB.set('pm_sessions.json', sessions),
         DriveDB.set('pm_settings.json', settings),
         DriveDB.set('pm_metro.json', metro),
+        DriveDB.set('pm_claves.json', claves),
       ]);
       setSaveStatus('saved');
       setSaveError(false);
@@ -3069,7 +3082,7 @@ function App() {
     </div>
   );
 
-  const TABS = [{id:'today',label:"Aujourd'hui",icon:'🎯'},{id:'library',label:'Bibliothèque',icon:'📚'},{id:'calendar',label:'Calendrier',icon:'📅'},{id:'settings',label:'Réglages',icon:'⚙️'}];
+  const TABS = [{id:'today',label:"Aujourd'hui",icon:'🎯'},{id:'library',label:'Bibliothèque',icon:'📚'},{id:'metro',label:'Métronome',icon:'🎚'},{id:'calendar',label:'Calendrier',icon:'📅'},{id:'settings',label:'Réglages',icon:'⚙️'}];
   const weekSessions = sessions.filter(s=>s.validated&&s.date&&sameWeek(s.date, localISO(new Date()), settings.weekStartDay??4)).length;
   const weekJoker = sessions.some(s=>s.joker&&s.date&&sameWeek(s.date, localISO(new Date()), settings.weekStartDay??4));
 
@@ -3158,11 +3171,125 @@ function App() {
 
       {/* Content */}
       <div style={{ flex:1, padding:'20px 16px 80px', overflowY:'auto' }}>
-        {tab==='today'    && <TodayView    items={items} settings={settings} sessions={sessions} setSessions={setSessions} setItems={setItems} metro={metro} setMetro={setMetro} />}
+        {tab==='today'    && <TodayView    items={items} settings={settings} sessions={sessions} setSessions={setSessions} setItems={setItems} metro={metro} setMetro={setMetro} claves={claves} saveClave={saveClave} />}
         {tab==='library'  && <LibraryView  items={items} setItems={setItems} settings={settings} />}
+        {tab==='metro'    && <MetronomeView metro={metro} setMetro={setMetro} claves={claves} setClaves={setClaves} saveClave={saveClave} />}
         {tab==='calendar' && <CalendarView sessions={sessions} setSessions={setSessions} settings={settings} />}
         {tab==='settings' && <SettingsView settings={settings} setSettings={setSettings} forceSave={forceSave} saveStatus={saveStatus} onExport={exportData} onImport={importData} onCleanup={cleanupPhotos} />}
       </div>
+    </div>
+  );
+}
+
+
+// ─── ONGLET MÉTRONOME : métronome libre + banque de claves ───────────────────
+function MetronomeView({ metro, setMetro, claves, setClaves, saveClave }) {
+  const [open, setOpen] = useState(null);          // null | { mode: 'free' | 'create' }
+  const [MetroComp, setMetroComp] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [renaming, setRenaming] = useState(null);  // { id, name }
+  const list = (Array.isArray(claves) ? claves : []).slice().sort((a, b) => String(a.name).localeCompare(String(b.name), 'fr', { sensitivity: 'base' }));
+  const freeCfg = metro && metro._libre ? metro._libre.cfg : null;
+
+  const launch = async (mode) => {
+    if (loading) return;
+    setLoading(true);
+    try {
+      const C = await loadMetronome();
+      setMetroComp(() => C);
+      setOpen({ mode });
+    } catch (e) {
+      alert("Métronome indisponible : " + e.message + "\nVérifie que metronome.jsx est bien déployé à côté de index.html.");
+    }
+    setLoading(false);
+  };
+  // Le bouton « retour » d'Android ferme le métronome au lieu de quitter l'appli
+  useEffect(() => {
+    if (!open) return;
+    history.pushState({ cadenceMetro: true }, '');
+    const onPop = () => setOpen(null);
+    window.addEventListener('popstate', onPop);
+    return () => {
+      window.removeEventListener('popstate', onPop);
+      if (history.state && history.state.cadenceMetro) history.back();
+    };
+  }, [open]);
+
+  const autoSave = (snap) => setMetro(prev => ({ ...(prev || {}), _libre: { cfg: snap } }));
+  const removeClave = (c) => {
+    if (!window.confirm('Supprimer la clave « ' + c.name + ' » ?')) return;
+    setClaves(prev => (Array.isArray(prev) ? prev : []).filter(x => x.id !== c.id));
+  };
+  const commitRename = () => {
+    if (!renaming) return;
+    const name = renaming.name.trim();
+    if (name) {
+      const clash = list.some(x => x.id !== renaming.id && String(x.name).trim().toLowerCase() === name.toLowerCase());
+      if (clash) { alert('Une autre clave porte déjà ce nom.'); return; }
+      setClaves(prev => (Array.isArray(prev) ? prev : []).map(x => x.id === renaming.id ? { ...x, name } : x));
+    }
+    setRenaming(null);
+  };
+  const info = (c) => {
+    const n = Array.isArray(c.pos) ? c.pos.filter(p => p && p[0] === 'e').length : 0;
+    const subs = { quarter: 'noires', eighth: 'croches', sixteenth: 'doubles-croches', triplet: 'triolets' };
+    return c.num + '/' + c.den + ' · ' + (subs[c.sub] || c.sub) + ' · ' + c.bars + ' mes. · ' + n + ' note' + (n > 1 ? 's' : '');
+  };
+  const card = { background:'rgba(255,255,255,0.04)', border:'1px solid rgba(255,255,255,0.08)', borderRadius:14, padding:16, marginBottom:14 };
+  const btn = (primary) => ({ padding:'12px 14px', borderRadius:12, border:'1px solid ' + (primary ? 'rgba(201,168,76,0.5)' : 'rgba(255,255,255,0.12)'), background: primary ? 'rgba(201,168,76,0.15)' : 'rgba(255,255,255,0.05)', color: primary ? '#c9a84c' : '#ccc', fontWeight:700, fontSize:14, cursor:'pointer' });
+  const small = { padding:'6px 10px', borderRadius:8, border:'1px solid rgba(255,255,255,0.12)', background:'rgba(255,255,255,0.05)', color:'#bbb', fontSize:12, cursor:'pointer' };
+
+  return (
+    <div>
+      <div style={card}>
+        <div style={{ fontSize:13, color:'#999', marginBottom:10 }}>Métronome libre, en dehors des exercices du jour.</div>
+        <button type="button" data-metro-free onClick={() => launch('free')} style={{ ...btn(true), width:'100%', fontSize:16 }}>
+          🎚 Lancer le métronome{freeCfg ? ' · ' + freeCfg.tempo + ' bpm' : ''}
+        </button>
+        <div style={{ fontSize:11, color:'#666', marginTop:8, textAlign:'center' }}>Il reprend tes derniers réglages et les mémorise automatiquement.</div>
+      </div>
+
+      <div style={card}>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:10 }}>
+          <div style={{ fontSize:15, fontWeight:700, color:'#f0e6d0' }}>Banque de claves{list.length ? ' (' + list.length + ')' : ''}</div>
+          <button type="button" data-metro-create onClick={() => launch('create')} style={small}>＋ Nouvelle clave</button>
+        </div>
+        {list.length === 0 && (
+          <div style={{ fontSize:13, color:'#777' }}>
+            Aucune clave pour l'instant. Touche « ＋ Nouvelle clave », dessine un motif sur une piste puis « 💾 Enregistrer ». Tu pourras ensuite la charger sur n'importe quelle piste avec « 📂 Ouvrir ».
+          </div>
+        )}
+        {list.map(c => (
+          <div key={c.id} data-clave-row style={{ padding:'10px 0', borderTop:'1px solid rgba(255,255,255,0.06)' }}>
+            {renaming && renaming.id === c.id ? (
+              <div style={{ display:'flex', gap:6 }}>
+                <input value={renaming.name} autoFocus maxLength={60} onChange={e => setRenaming({ id:c.id, name:e.target.value })} onKeyDown={e => { if (e.key === 'Enter') commitRename(); }}
+                  style={{ flex:1, minWidth:0, padding:'8px 10px', borderRadius:8, border:'1px solid rgba(255,255,255,0.2)', background:'rgba(255,255,255,0.06)', color:'#f0e6d0', fontSize:14 }} />
+                <button type="button" onClick={commitRename} style={small}>OK</button>
+                <button type="button" onClick={() => setRenaming(null)} style={small}>✕</button>
+              </div>
+            ) : (
+              <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ color:'#f0e6d0', fontWeight:600, fontSize:14, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{c.name}</div>
+                  <div style={{ color:'#777', fontSize:11 }}>{info(c)}</div>
+                </div>
+                <button type="button" data-rename onClick={() => setRenaming({ id:c.id, name:c.name })} style={small}>Renommer</button>
+                <button type="button" data-delete onClick={() => removeClave(c)} style={{ ...small, color:'#e05c5c' }}>🗑</button>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {open && MetroComp && ReactDOM.createPortal(
+        <MetroComp key={open.mode} free={true} title={open.mode === 'create' ? 'Nouvelle clave' : 'Métronome libre'}
+          initial={freeCfg} history={[]}
+          claves={claves} onSaveClave={saveClave} onAutoSave={autoSave}
+          autoStart={open.mode === 'free'} autoSeq={open.mode === 'create'}
+          onClose={() => setOpen(null)} />,
+        document.body
+      )}
     </div>
   );
 }
