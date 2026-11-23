@@ -51,6 +51,7 @@ const FREQUENCY_ORDER = ['every', 'every_2', 'every_4', 'never'];
 
 const DEFAULT_VOLUMES = { clave: 0.3, woodblock: 0.25, cowbell: 0.3, kick: 0.5, bell: 0.7 };
 
+const MAX_BARS = 8;
 const TEMPO_MIN = 30;
 const TEMPO_MAX = 300;
 
@@ -100,17 +101,27 @@ function buildLayout(num, den, sub) {
   return { total, units, subsPerUnit, labels, defaults };
 }
 
+// Positions par défaut : 1 mesure = valeurs habituelles ; plusieurs mesures = motif vide à dessiner
+function defaultPositions(num, den, sub, bars) {
+  const L = buildLayout(num, den, sub);
+  if (bars <= 1) return L.defaults;
+  const out = [];
+  for (let b = 0; b < bars; b++) L.defaults.forEach(d => out.push({ frequency: 'never', sound: 'clave' }));
+  return out;
+}
+
 // ─── Instantané d'un niveau (ce que Cadence enregistre) ──────────────────────
 const FREQ_CODE = { every: 'e', every_2: '2', every_4: '4', never: 'n' };
 const CODE_FREQ = { e: 'every', '2': 'every_2', '4': 'every_4', n: 'never' };
 
 function makeSnapshot(s) {
   return {
-    v: 1,
+    v: 2,
     tempo: s.tempo,
     num: s.num,
     den: s.den,
     sub: s.sub,
+    bars: s.bars,
     beacon: s.beacon,
     bell: s.bell,
     vol: { ...s.volumes },
@@ -120,7 +131,7 @@ function makeSnapshot(s) {
 
 // Lit un niveau enregistré en le validant (valeurs hors limites ou absentes → défauts)
 function readSnapshot(snap) {
-  const d = { tempo: 120, num: 4, den: 4, sub: 'eighth', beacon: 'none', bell: 'harmonic', volumes: { ...DEFAULT_VOLUMES }, positions: null };
+  const d = { tempo: 120, num: 4, den: 4, sub: 'eighth', bars: 1, beacon: 'none', bell: 'harmonic', volumes: { ...DEFAULT_VOLUMES }, positions: null };
   if (!snap || typeof snap !== 'object') return d;
   const tempo = parseInt(snap.tempo, 10);
   if (tempo >= TEMPO_MIN && tempo <= TEMPO_MAX) d.tempo = tempo;
@@ -136,8 +147,10 @@ function readSnapshot(snap) {
       if (isFinite(v) && v >= 0 && v <= 1) d.volumes[k] = v;
     });
   }
+  const bars = parseInt(snap.bars, 10);
+  if (bars >= 1 && bars <= MAX_BARS) d.bars = bars;   // niveaux anciens (sans « bars ») : 1 mesure
   const total = totalFor(d.num, d.den, d.sub);
-  if (Array.isArray(snap.pos) && snap.pos.length === total) {
+  if (Array.isArray(snap.pos) && snap.pos.length === total * d.bars) {
     const pos = snap.pos.map(p => ({
       frequency: CODE_FREQ[p && p[0]] || 'never',
       sound: AVAILABLE_SOUNDS[p && p[1]] && p[1] !== 'bell' ? p[1] : 'clave'
@@ -219,11 +232,13 @@ function CadenceMetronome({ title, initial, history, onValidate, onClose, autoSt
   const [num, setNum] = useState(init.num);
   const [den, setDen] = useState(init.den);
   const [sub, setSub] = useState(init.sub);
+  const [bars, setBars] = useState(init.bars);
+  const [brush, setBrush] = useState('clave'); // son posé en touchant une case (séquenceur)
   const [beacon, setBeacon] = useState(init.beacon);
   const [bell, setBell] = useState(init.bell);
   const [volumes, setVolumes] = useState(init.volumes);
   const [positions, setPositions] = useState(
-    () => init.positions || buildLayout(init.num, init.den, init.sub).defaults
+    () => init.positions || defaultPositions(init.num, init.den, init.sub, init.bars)
   );
 
   const [isPlaying, setIsPlaying] = useState(false);
@@ -235,13 +250,14 @@ function CadenceMetronome({ title, initial, history, onValidate, onClose, autoSt
 
   const layout = useMemo(() => buildLayout(num, den, sub), [num, den, sub]);
   const total = layout.total;
+  const cycleSteps = total * bars;
   // Filet de sécurité : jamais d'accès hors tableau
-  const pos = positions.length === total ? positions : layout.defaults;
-  const steps = useMemo(() => pos.map((p, i) => ({ ...p, label: layout.labels[i] })), [pos, layout]);
+  const pos = positions.length === cycleSteps ? positions : defaultPositions(num, den, sub, bars);
+  const steps = useMemo(() => pos.map((p, i) => ({ ...p, label: layout.labels[i % total] })), [pos, layout, total]);
 
   // ─── Refs : le planificateur lit toujours les valeurs courantes, sans redémarrer ─
   const live = useRef({});
-  live.current = { tempo, num, den, sub, beacon, bell, volumes, pos, layout, total };
+  live.current = { tempo, num, den, sub, bars, beacon, bell, volumes, pos, layout, total };
 
   const audioRef = useRef(null);
   const noteRef = useRef(0);
@@ -387,25 +403,27 @@ function CadenceMetronome({ title, initial, history, onValidate, onClose, autoSt
     const secPerStep = perBeat / div;
     const AHEAD = 0.15;
 
+    const cycle = L.total * L.bars;
+    // Anciens niveaux à 1 mesure : « une sur 2 / une sur 4 » se comptent sur un cycle de 4 mesures (ou de la longueur du repère)
+    const legacyCycle = L.beacon !== 'none' ? parseInt(L.beacon, 10) : 4;
+
     while (nextTimeRef.current < ctx.currentTime + AHEAD) {
-      const idx = noteRef.current % L.total;
-      const measure = measureRef.current;
+      const idx = noteRef.current % cycle;              // position dans tout le motif
+      const stepInBar = idx % L.total;
+      const count = measureRef.current - 1;             // mesures écoulées depuis le départ (0, 1, 2…)
+      const legacyMeasure = (count % legacyCycle) + 1;
       const p = L.pos[idx];
-      if (p && shouldPlay(p.frequency, measure)) {
-        const posInUnit = idx % L.layout.subsPerUnit;
+      if (p && shouldPlay(p.frequency, L.bars === 1 ? legacyMeasure : 1)) {
+        const posInUnit = stepInBar % L.layout.subsPerUnit;
         playSound(nextTimeRef.current, p.sound, Math.floor(posInUnit) === 0);
       }
-      if (L.beacon !== 'none' && idx === 0 && (measure - 1) % parseInt(L.beacon, 10) === 0) {
+      if (L.beacon !== 'none' && stepInBar === 0 && count % parseInt(L.beacon, 10) === 0) {
         playSound(nextTimeRef.current, 'bell', true);
       }
-      queueRef.current.push({ time: nextTimeRef.current, idx, measure });
+      queueRef.current.push({ time: nextTimeRef.current, idx, measure: L.bars === 1 ? legacyMeasure : Math.floor(idx / L.total) + 1 });
       nextTimeRef.current += secPerStep;
       noteRef.current++;
-      if (noteRef.current % L.total === 0) {
-        measureRef.current++;
-        const maxMeasures = L.beacon !== 'none' ? parseInt(L.beacon, 10) : 4;
-        if (measureRef.current > maxMeasures) measureRef.current = 1;
-      }
+      if (noteRef.current % L.total === 0) measureRef.current++;
     }
   }, [playSound]);
 
@@ -479,56 +497,83 @@ function CadenceMetronome({ title, initial, history, onValidate, onClose, autoSt
   }, []);
 
   // ─── Actions sur la grille (mises à jour immuables) ───────────────────────
+  const basePos = (prev) => (prev.length === cycleSteps ? prev : defaultPositions(num, den, sub, bars));
   const toggleFrequency = (i) => {
-    setPositions(prev => {
-      const base = prev.length === total ? prev : layout.defaults;
-      return base.map((p, k) => k !== i ? p : { ...p, frequency: FREQUENCY_ORDER[(FREQUENCY_ORDER.indexOf(p.frequency) + 1) % FREQUENCY_ORDER.length] });
-    });
+    setPositions(prev => basePos(prev).map((p, k) => k !== i ? p : { ...p, frequency: FREQUENCY_ORDER[(FREQUENCY_ORDER.indexOf(p.frequency) + 1) % FREQUENCY_ORDER.length] }));
   };
   const changeSound = (i, s) => {
-    setPositions(prev => {
-      const base = prev.length === total ? prev : layout.defaults;
-      return base.map((p, k) => k !== i ? p : { ...p, sound: s });
-    });
+    setPositions(prev => basePos(prev).map((p, k) => k !== i ? p : { ...p, sound: s }));
     setSoundSelectorOpen(null);
   };
-  // Changement de signature / subdivision : on repart des valeurs par défaut de la nouvelle mesure
+  // Séquenceur : touche une case → pose le son choisi ; re-touche avec le même son → retire
+  const paintCell = (i) => {
+    const cur = pos[i];
+    const removing = cur && cur.frequency === 'every' && cur.sound === brush;
+    setPositions(prev => basePos(prev).map((p, k) => k !== i ? p : (removing ? { ...p, frequency: 'never' } : { frequency: 'every', sound: brush })));
+    if (!removing) previewSound(brush);
+  };
+  // Changement de signature / subdivision : on repart de zéro pour la nouvelle mesure
   const changeMeter = (n, d, s) => {
     setNum(n); setDen(d); setSub(s);
-    setPositions(buildLayout(n, d, s).defaults);
+    setPositions(defaultPositions(n, d, s, bars));
     setSoundSelectorOpen(null);
   };
+  // Longueur du motif : en l'allongeant, chaque nouvelle mesure reprend la précédente ; en la raccourcissant, on garde le début
+  const resolvePos = (list, measure) => list.map(p => ({ ...p, frequency: shouldPlay(p.frequency, measure) ? 'every' : 'never' }));
+  const changeBars = (n) => {
+    setPositions(prev => {
+      let cur = basePos(prev);
+      const old = bars;
+      if (n > old) {
+        let barList = [];
+        for (let b = 0; b < old; b++) barList.push(cur.slice(b * total, (b + 1) * total));
+        if (old === 1) barList[0] = resolvePos(barList[0], 1);     // les anciens « une sur 2 / une sur 4 » deviennent de vrais motifs
+        for (let b = old; b < n; b++) barList.push(old === 1 ? resolvePos(cur.slice(0, total), b + 1) : barList[b - 1].map(p => ({ ...p })));
+        return barList.flat();
+      }
+      return cur.slice(0, total * n).map(p => n === 1 ? p : p);
+    });
+    setBars(n);
+    setSoundSelectorOpen(null);
+  };
+  const clearAll = () => setPositions(prev => basePos(prev).map(p => ({ ...p, frequency: 'never' })));
+  const clearBar = (b) => setPositions(prev => basePos(prev).map((p, k) => (k >= b * total && k < (b + 1) * total) ? { ...p, frequency: 'never' } : p));
+  const copyBar = (from, to) => setPositions(prev => { const cur = basePos(prev); return cur.map((p, k) => (k >= to * total && k < (to + 1) * total) ? { ...cur[from * total + (k - to * total)] } : p); });
+  const copyBarToAll = (from) => setPositions(prev => { const cur = basePos(prev); return cur.map((p, k) => ({ ...cur[from * total + (k % total)] })); });
 
   const applyPreset = (type) => {
     setPositions(prev => {
-      const base = prev.length === total ? prev : layout.defaults;
+      const base = basePos(prev);
       const perBeat = total / num;
       return base.map((p, i) => {
         let f = p.frequency;
         if (type === 'all') f = 'every';
         else if (type === 'none') f = 'never';
-        else if (type === 'downbeats') f = (i % perBeat === 0) ? 'every' : 'never';
-        else if (type === 'backbeat') f = (i === 2 || i === 6) ? 'every' : 'never';          // temps 2 et 4 (croches, 4/4)
-        else if (type === 'offbeats') f = (i % 2 === 1) ? 'every' : 'never';                  // les « et » (croches)
+        else if (type === 'downbeats') f = ((i % total) % perBeat === 0) ? 'every' : 'never';
+        else if (type === 'backbeat') f = ((i % total) === 2 || (i % total) === 6) ? 'every' : 'never';          // temps 2 et 4 (croches, 4/4)
+        else if (type === 'offbeats') f = ((i % total) % 2 === 1) ? 'every' : 'never';                  // les « et » (croches)
         return { ...p, frequency: f };
       });
     });
   };
 
   const validate = () => {
-    const snap = makeSnapshot({ tempo, num, den, sub, beacon, bell, volumes, positions: pos });
+    const snap = makeSnapshot({ tempo, num, den, sub, bars, beacon, bell, volumes, positions: pos });
     onValidate && onValidate(snap);
     setJustValidated(tempo);
   };
 
-  // ─── Aperçu 4 mesures ─────────────────────────────────────────────────────
+  // ─── Aperçu du motif (1 mesure : 4 mesures de cycle ; plusieurs mesures : le motif entier) ─
   const previewMeasures = useMemo(() => {
     const out = [];
-    for (let m = 1; m <= 4; m++) {
-      out.push({ measure: m, notes: pos.map(p => shouldPlay(p.frequency, m) ? '♪' : '_').join(' ') });
+    const n = bars === 1 ? 4 : bars;
+    for (let m = 1; m <= n; m++) {
+      const slice = bars === 1 ? pos : pos.slice((m - 1) * total, m * total);
+      out.push({ measure: m, notes: slice.map(p => shouldPlay(p.frequency, bars === 1 ? m : 1) ? '♪' : '_').join(' ') });
     }
     return out;
-  }, [pos]);
+  }, [pos, bars, total]);
+  const currentBar = bars > 1 && currentStep >= 0 ? Math.floor(currentStep / total) + 1 : currentMeasure;
 
   const last = history && history.length ? history[history.length - 1] : null;
   const fmtDate = (d) => { try { const [y, m, dd] = d.split('-'); return dd + '/' + m; } catch (e) { return d; } };
@@ -672,6 +717,83 @@ function CadenceMetronome({ title, initial, history, onValidate, onClose, autoSt
     ));
   };
 
+  // ─── Séquenceur compact (motifs de plusieurs mesures) ─────────────────────
+  const renderSequencer = () => {
+    const perRow = 16;
+    const nRows = Math.max(1, Math.ceil(total / perRow));
+    const unitCount = Math.max(1, Math.ceil(total / layout.subsPerUnit));
+    const unitsPerRow = Math.ceil(unitCount / nRows);
+    return (
+      <div>
+        <div className="text-slate-300 text-sm mb-2">Son à poser :</div>
+        <div className="flex flex-wrap gap-2 mb-4">
+          {Object.entries(AVAILABLE_SOUNDS).map(([key, snd]) => (
+            <button key={key} type="button" onClick={() => { setBrush(key); previewSound(key); }}
+              className="rounded-lg font-bold text-white"
+              style={{ backgroundColor: snd.color, padding: '0.4rem 0.7rem', fontSize: '0.8rem', outline: brush === key ? '3px solid #fbbf24' : 'none', opacity: brush === key ? 1 : 0.65 }}>
+              {snd.icon} {snd.label}
+            </button>
+          ))}
+        </div>
+        {Array.from({ length: bars }, (_, b) => {
+          const isCurBar = isPlaying && currentBar === b + 1;
+          const rowsOfBar = [];
+          for (let r = 0; r < nRows; r++) {
+            const fromU = r * unitsPerRow, toU = Math.min(unitCount, (r + 1) * unitsPerRow);
+            const groups = [];
+            for (let u = fromU; u < toU; u++) {
+              const g = [];
+              for (let k = 0; k < layout.subsPerUnit; k++) {
+                const si = Math.round(u * layout.subsPerUnit + k);
+                if (si < total && Math.floor(u * layout.subsPerUnit + k) === si && si >= u * layout.subsPerUnit - 1e-9) g.push(si);
+              }
+              if (g.length) groups.push({ u, g });
+            }
+            rowsOfBar.push(groups);
+          }
+          return (
+            <div key={b} className="mb-3 p-2 rounded-lg" style={{ background: isCurBar ? '#1e293b' : '#0f172a', border: isCurBar ? '2px solid #4ade80' : '2px solid #1e293b' }}>
+              <div className="flex items-center justify-between mb-1">
+                <span className={isCurBar ? 'text-green-400 font-bold text-sm' : 'text-slate-300 text-sm font-semibold'}>Mesure {b + 1}</span>
+                <span className="flex gap-1">
+                  {b > 0 && <button type="button" onClick={() => copyBar(b - 1, b)} className="metro-chip" style={{ fontSize: '0.7rem', padding: '0.2rem 0.5rem', borderRadius: 6, background: '#334155', color: '#e2e8f0' }}>Copier la {b}</button>}
+                  <button type="button" onClick={() => clearBar(b)} className="metro-chip" style={{ fontSize: '0.7rem', padding: '0.2rem 0.5rem', borderRadius: 6, background: '#334155', color: '#e2e8f0' }}>Vider</button>
+                </span>
+              </div>
+              {rowsOfBar.map((groups, r) => (
+                <div key={r} className="flex mb-1" style={{ gap: 6 }}>
+                  {groups.map(({ u, g }) => (
+                    <div key={u} className="flex" style={{ gap: 2, flex: g.length + ' 1 0', minWidth: 0 }}>
+                      {g.map(si => {
+                        const gi = b * total + si;
+                        const c = pos[gi];
+                        const on = c && c.frequency === 'every';
+                        const snd = AVAILABLE_SOUNDS[(c && c.sound)] || AVAILABLE_SOUNDS.clave;
+                        const isActive = isPlaying && currentStep === gi;
+                        const isDown = Math.floor(si % layout.subsPerUnit) === 0;
+                        return (
+                          <button key={si} type="button" data-cell={gi} data-on={on ? 1 : 0} onClick={() => paintCell(gi)}
+                            aria-label={`Mesure ${b + 1}, ${layout.labels[si]}`}
+                            style={{ flex: '1 1 0', minWidth: 0, height: 44, borderRadius: 6, fontSize: '0.85rem', lineHeight: 1,
+                              background: on ? snd.color : '#1e293b',
+                              border: isActive ? '2px solid #fbbf24' : (isDown ? '2px solid #475569' : '2px solid #334155'),
+                              color: '#fff', opacity: isPlaying && !isActive ? 0.7 : 1 }}>
+                            {on ? snd.icon : <span style={{ color: '#64748b', fontSize: '0.6rem' }}>{layout.labels[si]}</span>}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          );
+        })}
+        <div className="text-slate-500 text-xs">Touche une case pour poser le son choisi ; touche-la de nouveau (même son) pour l'effacer.</div>
+      </div>
+    );
+  };
+
   // ─── Rendu ────────────────────────────────────────────────────────────────
   const hasChanged = justValidated !== null && justValidated === tempo;
 
@@ -747,15 +869,33 @@ function CadenceMetronome({ title, initial, history, onValidate, onClose, autoSt
             </div>
           </div>
 
+          {/* Longueur du motif */}
+          <div className="metro-card p-4 mb-4">
+            <label className="block text-slate-300 text-sm mb-2">Longueur du motif (clave, pattern sur plusieurs mesures)</label>
+            <div className="flex items-center justify-center gap-4">
+              <button type="button" disabled={isPlaying || bars <= 1} onClick={() => changeBars(bars - 1)} className="metro-btn bg-slate-600" style={{ minWidth: 48 }} aria-label="Moins de mesures">−</button>
+              <div className="text-center" style={{ minWidth: 110 }}>
+                <span className="text-white font-mono text-3xl font-bold" data-bars>{bars}</span>
+                <span className="text-slate-400 ml-2">{bars > 1 ? 'mesures' : 'mesure'}</span>
+              </div>
+              <button type="button" disabled={isPlaying || bars >= MAX_BARS} onClick={() => changeBars(bars + 1)} className="metro-btn bg-slate-600" style={{ minWidth: 48 }} aria-label="Plus de mesures">+</button>
+            </div>
+            <div className="mt-2 text-slate-500 text-xs text-center">
+              {bars === 1 ? "1 mesure : grille classique (avec « une sur 2 / une sur 4 »)." : `Le motif de ${bars} mesures se répète en boucle.`}
+            </div>
+          </div>
+
           {/* Grille interactive */}
           <div className="metro-card p-3 sm:p-5 mb-4">
-            <h2 className="text-white text-lg font-semibold mb-3">Grille — {num}/{den} en {SUBDIVISION_OPTIONS[sub].label.toLowerCase()}</h2>
-            <div className="mb-4 text-slate-400 text-sm">
-              <div className="mb-1"><strong>Fréquence :</strong> touche le haut d'une note pour passer de {FREQUENCY_ORDER.map(f => FREQUENCIES[f].label).join(' → ')}</div>
-              <div><strong>Son :</strong> touche le bouton coloré en bas</div>
-            </div>
+            <h2 className="text-white text-lg font-semibold mb-3">{bars > 1 ? `Motif — ${bars} mesures en ${num}/${den}` : `Grille — ${num}/${den} en ${SUBDIVISION_OPTIONS[sub].label.toLowerCase()}`}</h2>
+            {bars === 1 && (
+              <div className="mb-4 text-slate-400 text-sm">
+                <div className="mb-1"><strong>Fréquence :</strong> touche le haut d'une note pour passer de {FREQUENCY_ORDER.map(f => FREQUENCIES[f].label).join(' → ')}</div>
+                <div><strong>Son :</strong> touche le bouton coloré en bas</div>
+              </div>
+            )}
             <div ref={gridMeasureRef} style={{ width: '100%', height: 0 }} aria-hidden="true" />
-            {renderGrid()}
+            {bars === 1 ? renderGrid() : renderSequencer()}
           </div>
 
           {/* Actions rapides */}
@@ -772,11 +912,11 @@ function CadenceMetronome({ title, initial, history, onValidate, onClose, autoSt
           </div>
 
           {/* Aperçu */}
-          <Fold title="Aperçu sur 4 mesures">
+          <Fold title={bars === 1 ? "Aperçu sur 4 mesures" : `Aperçu du motif (${bars} mesures)`}>
             <div className="space-y-2 font-mono">
               {previewMeasures.map(({ measure, notes }) => (
-                <div key={measure} className={`p-3 rounded ${isPlaying && currentMeasure === measure ? 'bg-slate-700 border-l-4 border-green-400' : 'bg-slate-900'}`}>
-                  <span className={isPlaying && currentMeasure === measure ? 'text-green-400 font-bold' : 'text-slate-400'}>Mes.{measure} :</span>
+                <div key={measure} className={`p-3 rounded ${isPlaying && currentBar === measure ? 'bg-slate-700 border-l-4 border-green-400' : 'bg-slate-900'}`}>
+                  <span className={isPlaying && currentBar === measure ? 'text-green-400 font-bold' : 'text-slate-400'}>Mes.{measure} :</span>
                   <span className="text-white ml-3 text-lg break-all">{notes}</span>
                 </div>
               ))}
